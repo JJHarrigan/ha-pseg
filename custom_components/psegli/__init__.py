@@ -101,72 +101,8 @@ async def get_last_cumulative_kwh(hass: HomeAssistant, statistic_id: str, before
         _LOGGER.warning("Could not get last statistics for %s: %s, starting from 0", statistic_id, e)
         return 0.0
 
-async def _handle_enter_mfa_code(hass: HomeAssistant, call: Any) -> None:
-    """Complete MFA by entering the verification code from email or SMS."""
-    code = call.data.get("code", "").strip()
-    if not code:
-        _LOGGER.error("No MFA code provided")
-        return
-    if not await check_addon_health():
-        _LOGGER.error("Addon not available - cannot complete MFA")
-        return
-    entries = hass.config_entries.async_entries(DOMAIN)
-    if not entries:
-        _LOGGER.error("PSEG integration not configured")
-        return
-    entry = entries[0]
-    cookies = await complete_mfa_login(code)
-    if cookies:
-        hass.config_entries.async_update_entry(
-            entry,
-            data={**entry.data, CONF_COOKIE: cookies},
-        )
-        if entry.entry_id in hass.data.get(DOMAIN, {}):
-            current_client = hass.data[DOMAIN][entry.entry_id]
-            current_client.update_cookie(cookies)
-            if hasattr(entry, "runtime_data") and entry.runtime_data:
-                coordinator = entry.runtime_data
-                if hasattr(coordinator, "client"):
-                    coordinator.client.update_cookie(cookies)
-        await hass.services.async_call(
-            "persistent_notification",
-            "dismiss",
-            {"notification_id": "psegli_mfa_required"},
-        )
-        msg = "Successfully completed MFA. Your PSEG integration is now working."
-        if entry.entry_id not in hass.data.get(DOMAIN, {}):
-            msg += " Reload the integration (Settings > Integrations > PSEG Long Island > Reload) to start using it."
-        await hass.services.async_call(
-            "persistent_notification",
-            "create",
-            {
-                "title": "PSEG Integration: MFA Complete",
-                "message": msg,
-                "notification_id": "psegli_mfa_complete",
-            },
-        )
-        _LOGGER.info("MFA completed successfully")
-    else:
-        _LOGGER.error("MFA failed - code may be invalid or session expired")
-        await hass.services.async_call(
-            "persistent_notification",
-            "create",
-            {
-                "title": "PSEG Integration: MFA Failed",
-                "message": "MFA verification failed. The code may be invalid or expired. Try refresh_cookie again, then enter the new code.",
-                "notification_id": "psegli_mfa_failed",
-            },
-        )
-
 async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
     """Set up the PSEG Long Island component."""
-    # Register enter_mfa_code in async_setup so it's available in Developer Tools > Actions
-    # even when config entry setup fails (e.g. MFA required, no cookie yet)
-    hass.services.async_register(
-        DOMAIN,
-        "enter_mfa_code",
-        lambda call: _handle_enter_mfa_code(hass, call),
-    )
     return True
 
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
@@ -404,11 +340,62 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         async_refresh_cookie
     )
     
-    # Register enter_mfa_code here too (async_setup may not run for config-entry-only integrations)
+    async def async_enter_mfa_code(call: Any) -> None:
+        """Complete MFA by entering the verification code from email or SMS."""
+        code = call.data.get("code", "").strip()
+        if not code:
+            _LOGGER.error("No MFA code provided")
+            return
+        if not await check_addon_health():
+            _LOGGER.error("Addon not available - cannot complete MFA")
+            return
+        cookies = await complete_mfa_login(code)
+        if cookies:
+            hass.config_entries.async_update_entry(
+                entry,
+                data={**entry.data, CONF_COOKIE: cookies},
+            )
+            if entry.entry_id in hass.data.get(DOMAIN, {}):
+                current_client = hass.data[DOMAIN][entry.entry_id]
+                current_client.update_cookie(cookies)
+                if hasattr(entry, "runtime_data") and entry.runtime_data:
+                    coordinator = entry.runtime_data
+                    if hasattr(coordinator, "client"):
+                        coordinator.client.update_cookie(cookies)
+            await hass.services.async_call(
+                "persistent_notification",
+                "dismiss",
+                {"notification_id": "psegli_mfa_required"},
+            )
+            msg = "Successfully completed MFA. Your PSEG integration is now working."
+            if entry.entry_id not in hass.data.get(DOMAIN, {}):
+                msg += " Reload the integration (Settings > Integrations > PSEG Long Island > Reload) to start using it."
+            await hass.services.async_call(
+                "persistent_notification",
+                "create",
+                {
+                    "title": "PSEG Integration: MFA Complete",
+                    "message": msg,
+                    "notification_id": "psegli_mfa_complete",
+                },
+            )
+            _LOGGER.info("MFA completed successfully")
+        else:
+            _LOGGER.error("MFA failed - code may be invalid or session expired")
+            await hass.services.async_call(
+                "persistent_notification",
+                "create",
+                {
+                    "title": "PSEG Integration: MFA Failed",
+                    "message": "MFA verification failed. The code may be invalid or expired. Try refresh_cookie again, then enter the new code.",
+                    "notification_id": "psegli_mfa_failed",
+                },
+            )
+    
     hass.services.async_register(
         DOMAIN,
         "enter_mfa_code",
-        lambda call: _handle_enter_mfa_code(hass, call),
+        async_enter_mfa_code
     )
     
     # Set up scheduled cookie refresh at XX:00 and XX:30
@@ -836,8 +823,9 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             del hass.data['global_scheduled_task_running']
             _LOGGER.debug("Cleaned up global scheduled task flag (last instance)")
     
-    # Remove the services (enter_mfa_code is registered in async_setup, not here)
+    # Remove the services
     hass.services.async_remove(DOMAIN, "update_statistics")
     hass.services.async_remove(DOMAIN, "refresh_cookie")
+    hass.services.async_remove(DOMAIN, "enter_mfa_code")
     
     return True 

@@ -130,15 +130,9 @@ With optional AddOn:
 
 If the `psegli.enter_mfa_code` action doesn't appear in Developer Tools > Actions:
 
-1. **Add to configuration.yaml** – Some Home Assistant setups only call `async_setup` when the integration is in `configuration.yaml`. Add this and restart:
+1. **Reload the integration** – Go to Settings > Integrations > PSEG Long Island > ⋮ > Reload
 
-   ```yaml
-   psegli:
-   ```
-
-2. **Reload the integration** – Go to Settings > Integrations > PSEG Long Island > ⋮ > Reload
-
-3. **Use Options flow** – You can still complete MFA via Settings > Integrations > PSEG Long Island > ⋮ > Options (leave cookie empty, Submit, then enter the code)
+2. **Use Options flow** – You can still complete MFA via Settings > Integrations > PSEG Long Island > ⋮ > Options (leave cookie empty, Submit, then enter the code)
 
 ### **Data Not Updating**
 
@@ -180,6 +174,10 @@ The addon provides these endpoints:
 - `POST /login-form` - Login with form data
 
 ## 📝 **Changelog**
+
+### **v2.4.2**
+
+- Fix enter_mfa_code action: register identically to refresh_cookie and update_statistics (no configuration.yaml needed)
 
 ### **v2.4.1**
 
