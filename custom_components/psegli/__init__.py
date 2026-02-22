@@ -291,6 +291,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 await current_client.test_connection()
                 _LOGGER.debug("New cookie validation successful")
                 
+                # Fetch and save energy data with the new cookie
+                try:
+                    await async_update_statistics_manual(type("Call", (), {"data": {"days_back": 0}})())
+                    _LOGGER.debug("Energy data saved after cookie refresh")
+                except Exception as stats_err:
+                    _LOGGER.warning("Statistics update after refresh failed: %s", stats_err)
+                
                 # Create a success notification
                 await hass.async_create_task(
                     hass.services.async_call(
@@ -367,6 +374,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 "dismiss",
                 {"notification_id": "psegli_mfa_required"},
             )
+            # Fetch and save energy data now that we have a valid cookie
+            try:
+                await async_update_statistics_manual(type("Call", (), {"data": {"days_back": 0}})())
+                _LOGGER.info("Energy data saved after MFA")
+            except Exception as stats_err:
+                _LOGGER.warning("Statistics update after MFA failed: %s", stats_err)
             msg = "Successfully completed MFA. Your PSEG integration is now working."
             if entry.entry_id not in hass.data.get(DOMAIN, {}):
                 msg += " Reload the integration (Settings > Integrations > PSEG Long Island > Reload) to start using it."
@@ -400,16 +413,35 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     
     # Set up scheduled cookie refresh at XX:00 and XX:30
     async def async_scheduled_cookie_refresh() -> None:
-        """Automatically refresh cookies at scheduled times (XX:00 and XX:30)."""
+        """Automatically refresh cookies at scheduled times (XX:00 and XX:30).
+        Only refreshes when the current cookie is invalid - avoids MFA on every run.
+        """
         _LOGGER.debug("Scheduled cookie refresh triggered")
         
         try:
             username = entry.data.get(CONF_USERNAME)
             password = entry.data.get(CONF_PASSWORD)
+            cookie = entry.data.get(CONF_COOKIE, "")
             
             if not username or not password:
                 _LOGGER.warning("No credentials available for scheduled cookie refresh")
                 return
+            
+            # If we have a cookie, test it first - skip refresh if still valid
+            if cookie and entry.entry_id in hass.data.get(DOMAIN, {}):
+                current_client = hass.data[DOMAIN][entry.entry_id]
+                try:
+                    await current_client.test_connection()
+                    _LOGGER.debug("Cookie still valid, skipping cookie refresh (no MFA needed)")
+                    # Still update statistics - energy data may have new readings
+                    try:
+                        await async_update_statistics_manual(type("Call", (), {"data": {"days_back": 0}})())
+                        _LOGGER.debug("Statistics updated (cookie still valid)")
+                    except Exception as stats_err:
+                        _LOGGER.warning("Statistics update failed: %s", stats_err)
+                    return
+                except InvalidAuth:
+                    _LOGGER.debug("Cookie expired, proceeding with refresh")
             
             # Check if addon is healthy before attempting refresh
             if not await check_addon_health():

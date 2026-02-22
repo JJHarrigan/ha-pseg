@@ -175,6 +175,12 @@ The addon provides these endpoints:
 
 ## 📝 **Changelog**
 
+### **v2.4.4**
+
+- Skip scheduled cookie refresh when cookie still valid (avoid MFA every 30 min)
+- Auto-update statistics after enter_mfa_code and on scheduled runs
+- Trigger update_statistics after refresh_cookie succeeds
+
 ### **v2.4.3**
 
 - Fix MFA code submission flow (wait_for_selector, iframe support, get_by_placeholder fallback)
