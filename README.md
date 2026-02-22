@@ -175,6 +175,11 @@ The addon provides these endpoints:
 
 ## 📝 **Changelog**
 
+### **v2.4.5**
+
+- Allow integration setup to complete when MFA required (call enter_mfa_code with code)
+- Add INFO logging for statistics update start/completion
+
 ### **v2.4.4**
 
 - Skip scheduled cookie refresh when cookie still valid (avoid MFA every 30 min)

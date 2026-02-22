@@ -119,6 +119,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         return False
     
     # If no cookie available, try to get one from the addon
+    mfa_pending = False
     if not cookie:
         _LOGGER.debug("No cookie available, attempting to get fresh cookies from addon...")
         try:
@@ -128,6 +129,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             if cookies and cookies != MFA_REQUIRED:
                 # Cookies are already in string format from addon
                 cookie_string = cookies
+                cookie = cookie_string  # Update local for rest of setup
                 _LOGGER.debug("Successfully obtained fresh cookies from addon")
                 
                 # Store cookie in config entry for future use
@@ -135,41 +137,55 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     entry,
                     data={**entry.data, CONF_COOKIE: cookie_string},
                 )
+            elif cookies == MFA_REQUIRED:
+                # Allow setup to complete - user must call enter_mfa_code with the code
+                mfa_pending = True
+                _LOGGER.info("PSEG requires MFA - setup will complete; call enter_mfa_code with the code")
+                channel = "phone" if mfa_method == "sms" else "email"
+                await hass.async_create_task(
+                    hass.services.async_call(
+                        "persistent_notification",
+                        "create",
+                        {
+                            "title": "PSEG Integration: MFA Required",
+                            "message": f"PSEG sent a verification code to your {channel}. Go to Developer Tools > Actions and call 'PSEG Long Island: Enter MFA Code' with the code.",
+                            "notification_id": "psegli_mfa_required",
+                        },
+                    )
+                )
             else:
                 _LOGGER.warning("Addon not available or failed to get cookies")
-                # Don't fail here - user can provide cookie manually later
         except Exception as e:
             _LOGGER.warning("Failed to get cookies from addon: %s", e)
-            # Don't fail here - user can provide cookie manually later
     
-    # If we still don't have a cookie, the integration can't function
-    if not cookie:
-        _LOGGER.error("No cookie available and addon failed to provide one. Please configure a cookie manually.")
-        # Create a persistent notification to guide the user
+    # Fail only if we have no cookie and MFA isn't pending (addon unavailable or login failed)
+    if not cookie and not mfa_pending:
+        _LOGGER.error("No cookie available and addon failed to provide one. Start the addon and try again, or configure a cookie manually.")
         await hass.async_create_task(
             hass.services.async_call(
                 "persistent_notification",
                 "create",
                 {
                     "title": "PSEG Integration: Cookie Required",
-                    "message": "No authentication cookie available. Please go to Settings > Integrations > PSEG Long Island > Configure to provide a valid cookie.",
+                    "message": "No authentication cookie available. Ensure the PSEG addon is running, then try again. Or go to Settings > Integrations > PSEG Long Island > Configure to provide a cookie manually.",
                     "notification_id": "psegli_cookie_required",
                 },
             )
         )
         return False
     
-    # Create client with the available cookie
-    client = PSEGLIClient(cookie)
+    # Create client (cookie may be empty if MFA pending - enter_mfa_code will update it)
+    client = PSEGLIClient(cookie or "")
     hass.data[DOMAIN][entry.entry_id] = client
     
-    # Test connection
-    try:
-        await client.test_connection()
-        _LOGGER.debug("PSEG connection test successful")
-    except InvalidAuth as e:
-        _LOGGER.error("Authentication failed: %s", e)
-        raise ConfigEntryAuthFailed("Invalid authentication")
+    # Test connection only when we have a cookie (skip when MFA pending)
+    if cookie:
+        try:
+            await client.test_connection()
+            _LOGGER.debug("PSEG connection test successful")
+        except InvalidAuth as e:
+            _LOGGER.error("Authentication failed: %s", e)
+            raise ConfigEntryAuthFailed("Invalid authentication")
     
     # Create coordinator for automatic updates (like Opower)
     coordinator = PSEGCoordinator(hass, entry, client)
@@ -187,7 +203,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def async_update_statistics_manual(call: Any) -> None:
         """Manually update statistics table with PSEG data (for backfilling)."""
         days_back = call.data.get("days_back", 0)
-        _LOGGER.debug("Statistics update service (days_back: %d)", days_back)
+        _LOGGER.info("Statistics update started (days_back: %d)", days_back)
         
         try:
             # Get the current client instance from hass.data (which gets updated during cookie refresh)
@@ -202,7 +218,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             
             if "chart_data" in historical_data:
                 await _process_chart_data(hass, historical_data["chart_data"])
-                _LOGGER.debug("Statistics update completed successfully")
+                _LOGGER.info("Statistics update completed successfully")
             else:
                 _LOGGER.warning("No chart data found in response")
                 
