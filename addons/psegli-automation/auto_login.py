@@ -608,7 +608,7 @@ class PSEGAutoLogin:
         """
         try:
             _LOGGER.info("📝 Entering MFA code...")
-            # Wait for code input to appear (page may update after "Send code" was clicked)
+            # Wait for code input - check main frame and iframes (Okta may use iframe)
             mfa_input_selectors = [
                 'input[name="answer"]',
                 'input[name="verificationCode"]',
@@ -617,32 +617,51 @@ class PSEGAutoLogin:
                 'input[type="tel"]',
                 'input[id*="verification"]',
                 'input[id*="answer"]',
-                'input[placeholder*="code" i]',
-                'input[placeholder*="Enter" i]',
                 'input[data-se="answer"]',
+                'input[type="text"]',  # Fallback: any text input
             ]
             mfa_input = None
+            mfa_frame = self.page.main_frame  # Frame containing the MFA form
+            frames_to_check = [self.page.main_frame]
             try:
-                frames_to_check = self.page.frames
+                frames_to_check.extend([f for f in self.page.frames if f != self.page.main_frame])
             except Exception:
-                frames_to_check = [self.page.main_frame]
-            for _ in range(20):  # Wait up to ~20 seconds for input to appear
-                for frame in frames_to_check:
-                    for sel in mfa_input_selectors:
-                        try:
-                            mfa_input = await frame.query_selector(sel)
-                            if mfa_input:
-                                is_visible = await mfa_input.is_visible()
-                                if is_visible:
-                                    break
-                                mfa_input = None
-                        except Exception:
-                            mfa_input = None
-                    if mfa_input:
-                        break
+                pass
+            for frame in frames_to_check:
+                for sel in mfa_input_selectors:
+                    try:
+                        mfa_input = await frame.wait_for_selector(sel, state="visible", timeout=2000)
+                        if mfa_input:
+                            # Skip if it looks like a long text field (not OTP)
+                            try:
+                                maxlen = await mfa_input.get_attribute("maxlength")
+                                if maxlen and int(maxlen) > 20:
+                                    mfa_input = None
+                                    continue
+                            except (TypeError, ValueError):
+                                pass
+                            mfa_frame = frame
+                            _LOGGER.info("Found MFA input with selector: %s", sel)
+                            break
+                    except Exception:
+                        mfa_input = None
+                        continue
                 if mfa_input:
                     break
-                await asyncio.sleep(1.0)
+            
+            # Fallback: try get_by_placeholder (Okta often uses "Enter code" or similar)
+            if not mfa_input:
+                for placeholder in ["Enter code", "Verification code", "Code", "Enter the code"]:
+                    try:
+                        loc = self.page.get_by_placeholder(placeholder).first
+                        await loc.wait_for(state="visible", timeout=2000)
+                        mfa_input = await loc.element_handle()
+                        if mfa_input:
+                            _LOGGER.info("Found MFA input via placeholder: %s", placeholder)
+                            break
+                    except Exception:
+                        mfa_input = None
+                        continue
             
             if not mfa_input:
                 _LOGGER.error("❌ MFA input field not found - page may have changed. Current URL: %s", self.page.url)
@@ -674,7 +693,7 @@ class PSEGAutoLogin:
             verify_btn = None
             for sel in verify_selectors:
                 try:
-                    verify_btn = await self.page.query_selector(sel)
+                    verify_btn = await mfa_frame.query_selector(sel)
                     if verify_btn and await verify_btn.is_visible():
                         break
                 except Exception:
@@ -683,7 +702,7 @@ class PSEGAutoLogin:
                 await verify_btn.click()
             else:
                 _LOGGER.info("Verify button not found, pressing Enter")
-                await self.page.keyboard.press("Enter")
+                await mfa_input.press("Enter")
             
             await asyncio.sleep(2.0)  # Let form submit
             _LOGGER.info("🔄 Waiting for dashboard after MFA...")
