@@ -20,7 +20,7 @@ from homeassistant.exceptions import ConfigEntryAuthFailed
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator, UpdateFailed
 
 from .const import DOMAIN, CONF_USERNAME, CONF_PASSWORD, CONF_COOKIE
-from .psegli import InvalidAuth, PSEGLIClient
+from .psegli import InvalidAuth, PSEGLIClient, PSEGLIError
 from .auto_login import get_fresh_cookies, check_addon_health, CAPTCHA_REQUIRED
 
 _LOGGER = logging.getLogger(__name__)
@@ -184,7 +184,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data[DOMAIN][entry.entry_id] = client
 
     try:
-        await client.test_connection()
+        await hass.async_add_executor_job(client.test_connection)
         _LOGGER.debug("PSEG connection test successful")
     except InvalidAuth as e:
         _LOGGER.error("Authentication failed: %s", e)
@@ -214,7 +214,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.debug("Update using client with cookie: %s",
                          current_client.cookie[:50] + "..." if len(current_client.cookie) > 50 else current_client.cookie)
 
-            historical_data = await current_client.get_usage_data(days_back=days_back)
+            historical_data = await hass.async_add_executor_job(
+                current_client.get_usage_data, None, None, days_back
+            )
 
             if "chart_data" in historical_data:
                 await _process_chart_data(hass, historical_data["chart_data"])
@@ -289,7 +291,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
                 _LOGGER.info("Successfully refreshed cookie via addon")
 
-                await current_client.test_connection()
+                await hass.async_add_executor_job(current_client.test_connection)
                 _LOGGER.debug("New cookie validation successful")
 
                 # Fetch and save energy data with the new cookie
@@ -368,7 +370,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             if cookie and entry.entry_id in hass.data.get(DOMAIN, {}):
                 current_client = hass.data[DOMAIN][entry.entry_id]
                 try:
-                    await current_client.test_connection()
+                    await hass.async_add_executor_job(current_client.test_connection)
                     _LOGGER.debug("Cookie still valid, skipping refresh")
                     # Still update statistics — energy data may have new readings
                     try:
@@ -419,7 +421,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
                 _LOGGER.info("Scheduled cookie refresh completed successfully")
 
-                await current_client.test_connection()
+                await hass.async_add_executor_job(current_client.test_connection)
                 _LOGGER.debug("New cookie validation successful")
 
                 try:

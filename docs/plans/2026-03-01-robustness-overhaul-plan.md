@@ -3,6 +3,28 @@
 **Date:** 2026-03-01
 **Goal:** Fix all identified bugs and fragility, rewrite the login flow to target mysmartenergy directly, add integration-focused tests to prevent regressions.
 
+---
+
+## Execution Status
+
+| Phase | Status | Commit | Notes |
+|-------|--------|--------|-------|
+| 1 | **COMPLETE** | `fb0f070` | All 5 sub-tasks done. 596 insertions, 1508 deletions across 8 files. |
+| 2 | **COMPLETE** | (pending commit) | psegli.py purely sync, all callers use async_add_executor_job |
+| 3 | Pending | — | |
+| 4 | Pending | — | |
+| 5 | Pending | — | Post-deploy |
+
+### Learnings & Adjustments
+
+- **Phase 1.1-1.2 (add-on rewrite):** Completed in prior session. The add-on `auto_login.py` went from 937 lines to ~230 lines. The `run.py` lost its `/login/mfa` endpoint and `_mfa_session` singleton.
+- **Phase 1.3-1.4 (integration side):** MFA references were spread across 6 files (auto_login.py, config_flow.py, __init__.py, const.py, services.yaml, translations). All removed in one pass. The `enter_mfa_code` service was also removed from `__init__.py` unload.
+- **Phase 1 adjustment:** The plan listed 1.5 (harden cleanup/setup_browser) as a separate step, but it was already implemented as part of 1.1 — `cleanup()` nulls all refs, guards double-close, and `setup_browser()` calls `cleanup()` on failure. No separate step needed.
+- **Phase 1 adjustment:** `config_flow.py` instance attrs `self._username`/`self._password` were added to `__init__()` but turned out to be unused — with MFA removed, there's no multi-step flow that needs to carry credentials between steps. The attrs are declared but harmless.
+- **Phase 2 learnings:** Made `PSEGLIClient` purely synchronous — removed `test_connection` async wrapper and `get_usage_data` async wrapper (both used `ThreadPoolExecutor`). Renamed the old `_test_connection_sync` to just `test_connection` and `_get_usage_data_sync` to `get_usage_data`. All 7 callsites in `__init__.py` and 3 in `config_flow.py` updated to use `hass.async_add_executor_job`. Also added `REQUEST_TIMEOUT = 30` constant and `timeout=REQUEST_TIMEOUT` to all 4 `requests` calls. Separated network errors (`ConnectionError`/`Timeout` → `PSEGLIError`) from auth errors (redirect to login → `InvalidAuth`). The `re` module import was moved to top of file (was previously `import re` inside a function). Added the Phase 3.5 TODO comment on the +4h timestamp shift.
+
+---
+
 ## Key Findings from Live Testing
 
 Before writing this plan, we tested the login flow against the real PSEG infrastructure and discovered:
@@ -18,11 +40,11 @@ Before writing this plan, we tested the login flow against the real PSEG infrast
 
 ---
 
-## Phase 1: Rewrite Login Flow (Direct mysmartenergy)
+## Phase 1: Rewrite Login Flow (Direct mysmartenergy) — COMPLETE
 
 *Replace the entire Brave → PSEG → myaccount → Okta → MFA chain with direct mysmartenergy login. This is the critical fix — it resolves the current timeout and eliminates the most fragile code.*
 
-### 1.1 Rewrite `auto_login.py` — new `PSEGAutoLogin` class
+### 1.1 Rewrite `auto_login.py` — new `PSEGAutoLogin` class — DONE
 
 **Files:** `addons/psegli-automation/auto_login.py`
 **Issues resolved:** C1 (networkidle), H4 (blanket interception), M1 (mixed return types), M2 (route.continue), H5 (cookie logging)
@@ -53,7 +75,7 @@ Remove entirely:
 - Hand-rolled stealth patches in `setup_browser()` init script
 - `exceptional_dashboard_data` tracking
 
-### 1.2 Update `run.py` — simplify FastAPI endpoints
+### 1.2 Update `run.py` — simplify FastAPI endpoints — DONE
 
 **Files:** `addons/psegli-automation/run.py`
 **Issues resolved:** C2 (race condition), C3 (browser leak), H3 (MFA TTL)
@@ -70,7 +92,7 @@ Keep `/login-form` as a convenience endpoint.
 Add new endpoint:
 - `GET /test-cookie` — accepts a cookie string, tests it against mysmartenergy Dashboard, returns valid/expired
 
-### 1.3 Update integration's `auto_login.py` client
+### 1.3 Update integration's `auto_login.py` client — DONE
 
 **Files:** `custom_components/psegli/auto_login.py`
 **Issues resolved:** M7 (aiohttp timeout type)
@@ -81,17 +103,18 @@ Add new endpoint:
 - Update `get_fresh_cookies()` return handling for new `LoginResult` enum
 - Add `CAPTCHA_REQUIRED` as a possible return value (integration can notify user)
 
-### 1.4 Update config flow
+### 1.4 Update config flow — DONE
 
 **Files:** `custom_components/psegli/config_flow.py`
 **Issues resolved:** M5 (credentials in flow context)
 
-- Remove MFA step (`async_step_mfa`)
+- Remove MFA step (`async_step_mfa`) from both config flow and options flow
 - Remove `mfa_method` from config schema (not needed for mysmartenergy)
 - Move credentials from `self.context` to instance attributes (`self._username`, `self._password`)
 - Handle `CAPTCHA_REQUIRED` response (show error asking user to try again — reCAPTCHA usually passes on retry with persistent profile)
+- Also updated: `const.py` (removed `CONF_MFA_METHOD`), `services.yaml` (removed `enter_mfa_code`), `translations/en/config_flow.json` (replaced MFA errors with CAPTCHA error)
 
-### 1.5 Harden `cleanup()` and `setup_browser()`
+### 1.5 Harden `cleanup()` and `setup_browser()` — DONE (included in 1.1)
 
 **Files:** `addons/psegli-automation/auto_login.py`
 **Issues resolved:** H1, H2
@@ -117,7 +140,7 @@ Add new endpoint:
 
 ---
 
-## Phase 2: Integration Thread Safety and API Robustness
+## Phase 2: Integration Thread Safety and API Robustness — COMPLETE
 
 *Fix the interconnected thread-safety cluster and HTTP robustness issues.*
 
@@ -242,7 +265,7 @@ if not hass.config_entries.async_entries(DOMAIN):
 **Files:** `custom_components/psegli/__init__.py`
 **Issues:** M4
 
-Delete line 669 (`local_tz = pytz.timezone("America/New_York")`) and use the `local_tz` already computed at line 614.
+Delete the second `local_tz = pytz.timezone("America/New_York")` inside the loop and use the `local_tz` already computed at the top of `_process_chart_data`.
 
 ### 3.5 Investigate and document the +4h timestamp shift
 

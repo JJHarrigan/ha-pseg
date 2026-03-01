@@ -69,7 +69,7 @@ class PSEGLIConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 # If we have a cookie, validate it
                 if cookie:
                     client = PSEGLIClient(cookie)
-                    await client.test_connection()
+                    await self.hass.async_add_executor_job(client.test_connection)
                     _LOGGER.debug("Cookie validation successful")
                 else:
                     _LOGGER.debug("No cookie available, integration will require manual cookie setup")
@@ -126,7 +126,7 @@ class PSEGLIOptionsFlow(config_entries.OptionsFlow):
                 # If user provided a new cookie, validate it
                 if new_cookie:
                     client = PSEGLIClient(new_cookie)
-                    await client.test_connection()
+                    await self.hass.async_add_executor_job(client.test_connection)
                     _LOGGER.debug("New cookie validation successful")
 
                     self.hass.config_entries.async_update_entry(
@@ -152,7 +152,7 @@ class PSEGLIOptionsFlow(config_entries.OptionsFlow):
                             errors["base"] = "captcha_required"
                         elif cookies:
                             client = PSEGLIClient(cookies)
-                            await client.test_connection()
+                            await self.hass.async_add_executor_job(client.test_connection)
 
                             self.hass.config_entries.async_update_entry(
                                 self.config_entry,
