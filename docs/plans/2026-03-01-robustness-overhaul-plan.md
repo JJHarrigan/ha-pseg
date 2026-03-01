@@ -15,7 +15,7 @@
 | 4 | **COMPLETE** | `732e5f9` | 25 tests across 3 files, all passing |
 | 4.5 | **COMPLETE** | `c3f0fc3` | Codex review fixes: cookie logging, service lifecycle, docs |
 | 4.6 | **COMPLETE** | `08a4c24` | Self-review: broken unload, validate-before-persist, unused imports |
-| 4.7 | IN PROGRESS | — | Codex round 2: multi-entry guard, timestamps, addon URL, test-cookie, verification overhead |
+| 4.7 | **COMPLETE** | `3870404` | Codex round 2: multi-entry guard, timestamps, addon URL, test-cookie, verification overhead |
 | 5 | Pending | — | Post-deploy |
 
 ### Phase 4.6 — Combined Self-Review + Agent Review Findings
