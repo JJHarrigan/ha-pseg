@@ -1,11 +1,13 @@
 """Tests for __init__.py integration lifecycle."""
 
 import asyncio
+from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from custom_components.psegli import (
+    _process_chart_data,
     async_setup_entry,
     async_unload_entry,
     async_update_options,
@@ -376,6 +378,37 @@ class TestGetLastCumulativeKwh:
 
         result = await get_last_cumulative_kwh(mock_hass, "psegli:off_peak_usage")
         assert result == 0.0
+
+
+# ---------------------------------------------------------------------------
+# _process_chart_data
+# ---------------------------------------------------------------------------
+
+class TestProcessChartData:
+    """Tests for _process_chart_data."""
+
+    @patch("custom_components.psegli.get_last_cumulative_kwh", new_callable=AsyncMock)
+    @patch("custom_components.psegli.async_add_external_statistics", new_callable=AsyncMock)
+    async def test_includes_mean_type_when_supported(
+        self, mock_add_stats, mock_get_last_cumulative, mock_hass
+    ):
+        """Include mean_type in metadata when the HA runtime supports it."""
+        mock_get_last_cumulative.return_value = 0.0
+        chart_data = {
+            "Off-Peak Usage": {
+                "valid_points": [
+                    {"timestamp": datetime(2026, 3, 1, 5, 0, tzinfo=timezone.utc), "value": 1.25}
+                ]
+            }
+        }
+
+        with patch("custom_components.psegli._STAT_METADATA_SUPPORTS_MEAN_TYPE", True), patch(
+            "custom_components.psegli._MEAN_TYPE_NONE", 0
+        ):
+            await _process_chart_data(mock_hass, chart_data)
+
+        metadata = mock_add_stats.call_args.args[1]
+        assert metadata["mean_type"] == 0
 
 
 # ---------------------------------------------------------------------------

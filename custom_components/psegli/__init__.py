@@ -13,6 +13,7 @@ from homeassistant.components.recorder.statistics import (
     get_last_statistics,
 )
 from homeassistant.components.recorder import get_instance
+from homeassistant.components.recorder.models import StatisticMetaData
 from homeassistant.config_entries import ConfigEntry
 from homeassistant.core import HomeAssistant
 from homeassistant.exceptions import ConfigEntryAuthFailed, ConfigEntryNotReady
@@ -26,6 +27,16 @@ _LOGGER = logging.getLogger(__name__)
 
 # Key for storing cookie acquisition timestamp in hass.data[DOMAIN]
 _COOKIE_OBTAINED_AT = "_cookie_obtained_at"
+
+# Home Assistant statistics metadata changed over time. Newer versions require
+# explicit mean_type; older versions do not define that field at all.
+_STAT_METADATA_ANNOTATIONS = getattr(StatisticMetaData, "__annotations__", {})
+_STAT_METADATA_SUPPORTS_MEAN_TYPE = "mean_type" in _STAT_METADATA_ANNOTATIONS
+try:
+    from homeassistant.components.recorder.models import StatisticMeanType
+    _MEAN_TYPE_NONE = StatisticMeanType.NONE
+except Exception:  # pragma: no cover - older HA versions
+    _MEAN_TYPE_NONE = 0
 
 
 def _log_cookie_age(hass: HomeAssistant, label: str) -> None:
@@ -635,6 +646,8 @@ async def _process_chart_data(hass: HomeAssistant, chart_data: dict[str, Any]) -
                     "has_sum": True,  # Set to True since we're sending cumulative totals
                     "name": f"PSEG {series_name}",
                 }
+                if _STAT_METADATA_SUPPORTS_MEAN_TYPE:
+                    metadata["mean_type"] = _MEAN_TYPE_NONE
 
                 _LOGGER.debug("Using metadata: %s", metadata)
 
