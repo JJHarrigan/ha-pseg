@@ -14,7 +14,7 @@ import uvicorn
 from fastapi import FastAPI, Form
 from pydantic import BaseModel
 
-from auto_login import get_fresh_cookies
+from auto_login import CAPTCHA_REQUIRED_SENTINEL, get_fresh_cookies
 
 # Set HEADED=1 to run browser in headed mode (visible) for debugging
 HEADED = os.environ.get("HEADED", "").lower() in ("1", "true", "yes")
@@ -62,7 +62,7 @@ async def login(request: LoginRequest):
                 headless=not HEADED,
             )
 
-            if result == "CAPTCHA_REQUIRED":
+            if result == CAPTCHA_REQUIRED_SENTINEL:
                 logger.warning("CAPTCHA required — manual intervention needed")
                 return LoginResponse(
                     success=False,

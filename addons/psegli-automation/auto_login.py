@@ -9,6 +9,7 @@ after a few visits with a persistent browser profile.
 """
 
 import asyncio
+import inspect
 import json
 import logging
 import os
@@ -26,6 +27,7 @@ DEFAULT_PROFILE_DIR = os.path.join(os.path.dirname(__file__), ".browser_profile"
 # URLs
 LOGIN_URL = "https://mysmartenergy.psegliny.com/Dashboard"
 LOGIN_API_PATH = "/Home/Login"
+CAPTCHA_REQUIRED_SENTINEL = "CAPTCHA_REQUIRED"
 
 
 class LoginResult(str, Enum):
@@ -126,7 +128,6 @@ class PSEGAutoLogin:
             await self.page.goto(LOGIN_URL, wait_until="domcontentloaded")
             await asyncio.sleep(2)
 
-
             # Check if already authenticated (persistent profile session still valid)
             login_form = await self.page.query_selector("#LoginEmail")
             if not login_form:
@@ -199,7 +200,9 @@ class PSEGAutoLogin:
             return LoginResult.FAILED, None
         finally:
             try:
-                self.page.remove_listener("response", on_response)
+                maybe_awaitable = self.page.remove_listener("response", on_response)
+                if inspect.isawaitable(maybe_awaitable):
+                    await maybe_awaitable
             except Exception:
                 pass
 
@@ -227,7 +230,7 @@ class PSEGAutoLogin:
 
         Returns:
             Cookie string "MM_SID=...; __RequestVerificationToken=..." or None.
-            Returns "CAPTCHA_REQUIRED" if manual CAPTCHA solving is needed.
+            Returns CAPTCHA_REQUIRED_SENTINEL if manual CAPTCHA solving is needed.
         """
         try:
             if not await self.setup_browser():
@@ -236,9 +239,7 @@ class PSEGAutoLogin:
             result, cookies = await self.login()
 
             if result == LoginResult.CAPTCHA_REQUIRED:
-                # String sentinel — must match CAPTCHA_REQUIRED in
-                # custom_components/psegli/auto_login.py
-                return "CAPTCHA_REQUIRED"
+                return CAPTCHA_REQUIRED_SENTINEL
             if result == LoginResult.SUCCESS:
                 return cookies
             return None
@@ -282,7 +283,7 @@ async def get_fresh_cookies(
     Get fresh PSEG cookies via mysmartenergy login.
 
     Returns:
-        Cookie string, "CAPTCHA_REQUIRED", or None on failure.
+        Cookie string, CAPTCHA_REQUIRED_SENTINEL, or None on failure.
     """
     _LOGGER.info("Login attempt for user: %s", username)
     login = PSEGAutoLogin(email=username, password=password, headless=headless)
@@ -315,7 +316,7 @@ if __name__ == "__main__":
             headless=not args.headed,
         )
         cookies = await login.get_cookies()
-        if cookies == "CAPTCHA_REQUIRED":
+        if cookies == CAPTCHA_REQUIRED_SENTINEL:
             _LOGGER.error("CAPTCHA required — run with --headed and solve manually")
             return 1
         if cookies:

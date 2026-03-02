@@ -27,6 +27,7 @@ def mock_playwright():
     page.fill = AsyncMock()
     page.click = AsyncMock()
     page.on = MagicMock()
+    page.remove_listener = AsyncMock()
     page.set_default_timeout = MagicMock()
 
     # Context with pages and cookies
@@ -51,6 +52,31 @@ def _make_login_instance():
 
 class TestPSEGAutoLogin:
     """Tests for PSEGAutoLogin class."""
+
+    @pytest.mark.asyncio
+    async def test_login_removes_response_listener_with_await(self, mock_playwright):
+        """Response listener cleanup should be awaited for async mock implementations."""
+        pw, context, page = mock_playwright
+        login = _make_login_instance()
+
+        with patch("auto_login.async_playwright") as mock_ap:
+            mock_ap.return_value.start = AsyncMock(return_value=pw)
+            with patch("auto_login.Stealth") as mock_stealth:
+                mock_stealth.return_value.apply_stealth_async = AsyncMock()
+                await login.setup_browser()
+                with patch("auto_login.asyncio.sleep", new_callable=AsyncMock):
+                    await login.login()
+
+        # If remove_listener is async, it must be awaited to avoid RuntimeWarning leaks
+        assert page.remove_listener.await_count == 1
+
+    @pytest.mark.asyncio
+    async def test_captcha_required_sentinel_shared_with_integration(self):
+        """Addon and integration should expose the same CAPTCHA sentinel constant."""
+        import auto_login as addon_auto_login
+        from custom_components.psegli.auto_login import CAPTCHA_REQUIRED as integration_sentinel
+
+        assert addon_auto_login.CAPTCHA_REQUIRED_SENTINEL == integration_sentinel
 
     @pytest.mark.asyncio
     async def test_navigates_to_mysmartenergy(self, mock_playwright):
