@@ -54,6 +54,26 @@ cp -r custom_components/psegli /config/custom_components/
 
 2. Restart Home Assistant
 
+## Update Existing Installation
+
+Use this when upgrading an already-installed setup.
+
+1. Update integration code (`custom_components/psegli`):
+- HACS: update the integration in HACS, then restart Home Assistant.
+- Manual: replace `/config/custom_components/psegli` with the latest folder from this repo, then restart Home Assistant.
+2. Update/rebuild add-on (`PSEG Long Island Automation`):
+- Go to `Settings -> Apps -> Install app -> PSEG Long Island Automation`.
+- Click `Update` if available. If `Update` is not shown, click `Rebuild`.
+- Start the add-on and confirm state is `Running`.
+3. Restart Home Assistant after both integration + add-on are updated.
+
+Validation after update:
+- `Settings -> Devices & Services -> PSEG Long Island` loads (not failed)
+- `Developer Tools -> Actions` shows:
+  - `psegli.refresh_cookie`
+  - `psegli.update_statistics`
+- Running `psegli.update_statistics` with `days_back: 0` succeeds
+
 ## 3) Configure the Integration
 
 In Home Assistant:
@@ -92,6 +112,52 @@ Caveats:
 - No automated browser login
 - No automatic recovery when cookie expires
 - You must reconfigure/update cookie manually
+
+### How To Get a Manual Cookie (Exact Steps)
+
+1. Open `https://mysmartenergy.psegliny.com/Dashboard` in a normal desktop browser.
+2. Sign in fully with your PSEG credentials.
+3. Open browser developer tools:
+- Chrome/Edge: `Cmd+Option+I` (Mac) or `F12` (Windows/Linux)
+- Firefox: `Cmd+Option+I` (Mac) or `F12`
+- Safari: enable Developer menu, then `Develop -> Show Web Inspector`
+4. Open cookie storage for `https://mysmartenergy.psegliny.com`:
+- Chrome/Edge: `Application -> Storage -> Cookies -> https://mysmartenergy.psegliny.com`
+  (if `Application` tab is hidden, click `>>`)
+- Firefox: `Storage -> Cookies -> https://mysmartenergy.psegliny.com`
+- Safari: `Storage -> Cookies -> mysmartenergy.psegliny.com`
+5. Copy values for both cookies:
+- `MM_SID`
+- `__RequestVerificationToken`
+6. Build one cookie string exactly:
+
+```text
+MM_SID=<MM_SID_VALUE>; __RequestVerificationToken=<TOKEN_VALUE>
+```
+
+Rules:
+- Include both cookie names exactly as written.
+- Keep the semicolon separator: `; `
+- Do not add quotes.
+
+### Where To Enter the Manual Cookie in Home Assistant
+
+New install:
+1. `Settings -> Devices & Services -> Add Integration -> PSEG Long Island`
+2. Enter `username` and `password`
+3. Paste cookie string into `cookie`
+4. Submit
+
+Existing install:
+1. `Settings -> Devices & Services -> Integrations -> PSEG Long Island`
+2. Open card/details menu and choose `Configure` or `Options` (label varies by HA version)
+3. Paste cookie string into `cookie`
+4. Submit
+
+If `Configure`/`Options` is missing:
+- Delete the failed PSEG integration entry
+- Restart Home Assistant
+- Re-add integration and provide credentials/cookie in initial add flow
 
 ## Runtime Refresh Behavior
 
