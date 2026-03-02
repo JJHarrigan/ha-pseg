@@ -8,6 +8,7 @@ jobs:
   pytest:
     name: "pytest (${{ matrix.lane }})"
     runs-on: ubuntu-latest
+    timeout-minutes: 45
     continue-on-error: ${{ matrix.allow_failure }}
     strategy:
       fail-fast: false
