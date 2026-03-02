@@ -42,7 +42,8 @@ Preferred shipping sequence:
 1. Ship Phases 1-3 first (auth correctness + refresh hardening + observability).
 2. Ship Phase 4 next (incremental fetch + bounded auto-backfill) once new
    signals are available.
-3. Apply Phases 5-7 tests/rollout/docs for each release boundary.
+3. Apply Phases 5-7 (tests/rollout/docs) when cutting each release that
+   includes plan changes.
 
 ---
 
@@ -207,7 +208,8 @@ Implement incremental fetch planning:
 - Track `last_successful_datapoint_at` (UTC) after successful ingestion.
 - Persist/restore behavior:
   - on startup, if in-memory `last_successful_datapoint_at` is missing,
-    derive it from latest recorder statistics timestamp when possible;
+    derive it from latest recorder statistics timestamp when possible
+    (use max last-written timestamp across both statistics series);
     if unavailable, fall back to one broad recent-window fetch for that run.
 - Compute routine fetch start from:
   - `last_successful_datapoint_at - overlap`, where overlap defaults to `1h`.
