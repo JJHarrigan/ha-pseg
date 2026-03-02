@@ -18,6 +18,14 @@ from custom_components.psegli.const import DOMAIN, CONF_COOKIE, CONF_USERNAME, C
 from custom_components.psegli.exceptions import InvalidAuth, PSEGLIError
 
 
+def _get_registered_service_handler(mock_hass, service_name: str):
+    """Extract a service callback from hass.services.async_register calls."""
+    for call in mock_hass.services.async_register.call_args_list:
+        if call[0][1] == service_name:
+            return call[0][2]
+    raise AssertionError(f"Service {service_name} not registered")
+
+
 # ---------------------------------------------------------------------------
 # async_setup_entry
 # ---------------------------------------------------------------------------
@@ -187,6 +195,109 @@ class TestAsyncSetupEntry:
         await async_setup_entry(mock_hass, mock_config_entry)
 
         mock_hass.services.async_register.assert_not_called()
+
+    @patch("custom_components.psegli.PSEGLIClient")
+    @patch("custom_components.psegli.get_fresh_cookies", new_callable=AsyncMock)
+    @patch("custom_components.psegli.check_addon_health", new_callable=AsyncMock)
+    async def test_update_auth_failure_schedules_coalesced_refresh(
+        self, mock_health, mock_fresh, mock_client_cls, mock_hass, mock_config_entry
+    ):
+        """InvalidAuth during update schedules one delayed refresh and increments counter."""
+        mock_client = MagicMock()
+        mock_client.test_connection = MagicMock(return_value=True)
+        mock_client.cookie = "MM_SID=valid_test_cookie"
+        mock_client.get_usage_data = MagicMock(side_effect=InvalidAuth("chart auth failed"))
+        mock_client_cls.return_value = mock_client
+        mock_hass.config_entries.async_entries.return_value = [mock_config_entry]
+
+        await async_setup_entry(mock_hass, mock_config_entry)
+        update_handler = _get_registered_service_handler(mock_hass, "update_statistics")
+
+        await update_handler(MagicMock(data={"days_back": 0}))
+        await update_handler(MagicMock(data={"days_back": 0}))
+
+        assert mock_hass.data[DOMAIN]["_consecutive_auth_failures"] == 2
+        pending = mock_hass.data[DOMAIN].get("_pending_auth_refresh_task")
+        assert pending is not None
+        assert not pending.done()
+
+        pending.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await pending
+
+    @patch("custom_components.psegli.PSEGLIClient")
+    @patch("custom_components.psegli.get_fresh_cookies", new_callable=AsyncMock)
+    @patch("custom_components.psegli.check_addon_health", new_callable=AsyncMock)
+    async def test_auth_failure_threshold_emits_loop_notification_once(
+        self, mock_health, mock_fresh, mock_client_cls, mock_hass, mock_config_entry
+    ):
+        """Third consecutive auth failure should emit loop notification once."""
+        mock_client = MagicMock()
+        mock_client.test_connection = MagicMock(return_value=True)
+        mock_client.cookie = "MM_SID=valid_test_cookie"
+        mock_client.get_usage_data = MagicMock(side_effect=InvalidAuth("chart auth failed"))
+        mock_client_cls.return_value = mock_client
+        mock_hass.config_entries.async_entries.return_value = [mock_config_entry]
+
+        await async_setup_entry(mock_hass, mock_config_entry)
+        update_handler = _get_registered_service_handler(mock_hass, "update_statistics")
+
+        await update_handler(MagicMock(data={"days_back": 0}))
+        await update_handler(MagicMock(data={"days_back": 0}))
+        await update_handler(MagicMock(data={"days_back": 0}))
+
+        loop_notifications = [
+            call
+            for call in mock_hass.services.async_call.call_args_list
+            if call.args[0] == "persistent_notification"
+            and call.args[1] == "create"
+            and call.args[2].get("notification_id") == "psegli_chart_auth_failed_loop"
+        ]
+        assert len(loop_notifications) == 1
+
+        pending = mock_hass.data[DOMAIN].get("_pending_auth_refresh_task")
+        if pending is not None and not pending.done():
+            pending.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await pending
+
+    @patch("custom_components.psegli.PSEGLIClient")
+    @patch("custom_components.psegli.get_fresh_cookies", new_callable=AsyncMock)
+    @patch("custom_components.psegli.check_addon_health", new_callable=AsyncMock, return_value=True)
+    async def test_refresh_service_is_single_flight(
+        self, mock_health, mock_fresh, mock_client_cls, mock_hass, mock_config_entry
+    ):
+        """Concurrent refresh service calls should share one in-flight refresh task."""
+        started = asyncio.Event()
+        release = asyncio.Event()
+
+        async def _slow_refresh(*_args, **_kwargs):
+            started.set()
+            await release.wait()
+            return "MM_SID=new_cookie; __RequestVerificationToken=new_token"
+
+        mock_fresh.side_effect = _slow_refresh
+
+        mock_client = MagicMock()
+        mock_client.test_connection = MagicMock(return_value=True)
+        mock_client.cookie = "MM_SID=valid_test_cookie"
+        mock_client.get_usage_data = MagicMock(return_value={"chart_data": {}})
+        mock_client_cls.return_value = mock_client
+        mock_hass.config_entries.async_entries.return_value = [mock_config_entry]
+
+        await async_setup_entry(mock_hass, mock_config_entry)
+        refresh_handler = _get_registered_service_handler(mock_hass, "refresh_cookie")
+
+        call = MagicMock(data={})
+        t1 = asyncio.create_task(refresh_handler(call))
+        await started.wait()
+        t2 = asyncio.create_task(refresh_handler(call))
+        await asyncio.sleep(0)
+        assert mock_fresh.call_count == 1
+
+        release.set()
+        await asyncio.gather(t1, t2)
+        assert mock_fresh.call_count == 1
 
     @patch("custom_components.psegli.PSEGLIClient")
     @patch("custom_components.psegli.get_fresh_cookies", new_callable=AsyncMock)
@@ -538,3 +649,19 @@ class TestAsyncUpdateOptions:
 
         # Should not raise
         await async_update_options(mock_hass, mock_config_entry)
+
+    async def test_manual_cookie_update_resets_auth_failure_counter(self, mock_hass, mock_config_entry):
+        """Manual cookie updates should clear consecutive auth failures immediately."""
+        mock_client = MagicMock()
+        mock_hass.data[DOMAIN] = {
+            mock_config_entry.entry_id: mock_client,
+            "_consecutive_auth_failures": 3,
+        }
+        mock_config_entry.data = {CONF_COOKIE: "MM_SID=updated"}
+        mock_coord = MagicMock()
+        mock_coord.client = MagicMock()
+        mock_config_entry.runtime_data = mock_coord
+
+        await async_update_options(mock_hass, mock_config_entry)
+
+        assert mock_hass.data[DOMAIN]["_consecutive_auth_failures"] == 0

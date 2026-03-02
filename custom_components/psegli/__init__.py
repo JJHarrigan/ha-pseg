@@ -27,6 +27,14 @@ _LOGGER = logging.getLogger(__name__)
 
 # Key for storing cookie acquisition timestamp in hass.data[DOMAIN]
 _COOKIE_OBTAINED_AT = "_cookie_obtained_at"
+_AUTH_FAILURE_COUNT = "_consecutive_auth_failures"
+_LAST_AUTH_LOOP_NOTIFICATION_AT = "_last_chart_auth_loop_notification_at"
+_REFRESH_IN_PROGRESS_TASK = "_refresh_in_progress_task"
+_PENDING_AUTH_REFRESH_TASK = "_pending_auth_refresh_task"
+
+_AUTH_FAILURE_THRESHOLD = 3
+_AUTH_FAILURE_REFRESH_DELAY_SECONDS = 10
+_AUTH_FAILURE_NOTIFICATION_COOLDOWN = timedelta(hours=24)
 
 # Home Assistant statistics metadata changed over time. Newer versions require
 # explicit fields like mean_type/unit_class; older versions do not define them.
@@ -101,6 +109,8 @@ async def async_setup(hass: HomeAssistant, config: dict[str, Any]) -> bool:
 async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     """Set up PSEG Long Island from a config entry."""
     hass.data.setdefault(DOMAIN, {})
+    domain_data = hass.data[DOMAIN]
+    domain_data.setdefault(_AUTH_FAILURE_COUNT, 0)
 
     # Get credentials from config entry
     username = entry.data.get(CONF_USERNAME)
@@ -199,15 +209,242 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Listen for config changes (when user updates cookie via options)
     entry.async_on_unload(entry.add_update_listener(async_update_options))
 
+    def _reset_auth_failure_counter(reason: str) -> None:
+        """Reset consecutive auth-failure count after successful recovery."""
+        previous = domain_data.get(_AUTH_FAILURE_COUNT, 0)
+        if previous:
+            _LOGGER.debug("Reset auth failure counter (%s): %d -> 0", reason, previous)
+        domain_data[_AUTH_FAILURE_COUNT] = 0
+
+    async def _record_auth_failure(reason: str) -> int:
+        """Increment auth-failure count and emit loop notification on threshold."""
+        count = domain_data.get(_AUTH_FAILURE_COUNT, 0) + 1
+        domain_data[_AUTH_FAILURE_COUNT] = count
+        _LOGGER.warning(
+            "Auth failure recorded (%s): %d consecutive failures",
+            reason,
+            count,
+        )
+
+        if count < _AUTH_FAILURE_THRESHOLD:
+            return count
+
+        now = datetime.now(tz=timezone.utc)
+        last_notified = domain_data.get(_LAST_AUTH_LOOP_NOTIFICATION_AT)
+        if (
+            last_notified is None
+            or now - last_notified >= _AUTH_FAILURE_NOTIFICATION_COOLDOWN
+        ):
+            await hass.services.async_call(
+                "persistent_notification",
+                "create",
+                {
+                    "title": "PSEG Integration: Repeated Auth Failures",
+                    "message": (
+                        "PSEG authentication has failed repeatedly during data "
+                        "updates. Integration will keep retrying automatically, "
+                        "but please check addon health or provide a manual cookie."
+                    ),
+                    "notification_id": "psegli_chart_auth_failed_loop",
+                },
+            )
+            domain_data[_LAST_AUTH_LOOP_NOTIFICATION_AT] = now
+
+        return count
+
+    async def _refresh_cookie_once(
+        trigger_reason: str,
+        notify_on_success: bool,
+        notify_on_failure: bool,
+    ) -> bool:
+        """Run one cookie refresh attempt and optional follow-up update."""
+        active_entry = _get_active_entry(hass)
+        if active_entry is None:
+            return False
+
+        username = active_entry.data.get(CONF_USERNAME)
+        password = active_entry.data.get(CONF_PASSWORD)
+        if not username or not password:
+            _LOGGER.error("No credentials available for cookie refresh (%s)", trigger_reason)
+            return False
+
+        if not await check_addon_health():
+            _LOGGER.warning("Addon not available or unhealthy (%s)", trigger_reason)
+            return False
+
+        cookies = await get_fresh_cookies(username, password)
+        if cookies == CAPTCHA_REQUIRED:
+            _LOGGER.warning("reCAPTCHA challenge triggered (%s)", trigger_reason)
+            await hass.services.async_call(
+                "persistent_notification",
+                "create",
+                {
+                    "title": "PSEG Integration: reCAPTCHA Required",
+                    "message": (
+                        "reCAPTCHA challenge was triggered. Try refresh_cookie "
+                        "again — it usually passes after a few attempts."
+                    ),
+                    "notification_id": "psegli_captcha_required",
+                },
+            )
+            return False
+
+        if not cookies:
+            _LOGGER.warning("Addon failed to provide fresh cookies (%s)", trigger_reason)
+            if notify_on_failure:
+                await hass.services.async_call(
+                    "persistent_notification",
+                    "create",
+                    {
+                        "title": "PSEG Integration: Cookie Refresh Failed",
+                        "message": (
+                            "Failed to refresh your PSEG authentication cookie. "
+                            "Please check addon status or provide a cookie manually."
+                        ),
+                        "notification_id": "psegli_cookie_refresh_failed",
+                    },
+                )
+            return False
+
+        current_client = hass.data[DOMAIN][active_entry.entry_id]
+
+        # Validate BEFORE persisting — rollback on failure
+        old_cookie = current_client.cookie
+        current_client.update_cookie(cookies)
+        try:
+            await hass.async_add_executor_job(current_client.test_connection)
+        except Exception:
+            current_client.update_cookie(old_cookie)
+            raise
+        _LOGGER.debug("New cookie validation successful (%s)", trigger_reason)
+
+        if hasattr(active_entry, "runtime_data") and active_entry.runtime_data:
+            coord = active_entry.runtime_data
+            if hasattr(coord, "client"):
+                coord.client.update_cookie(cookies)
+
+        hass.config_entries.async_update_entry(
+            active_entry,
+            data={**active_entry.data, CONF_COOKIE: cookies},
+        )
+
+        _record_cookie_obtained(hass)
+        _reset_auth_failure_counter("cookie refresh success")
+        _LOGGER.info("Successfully refreshed cookie (%s)", trigger_reason)
+
+        # Fetch and save energy data with the new cookie.
+        try:
+            await _do_update_statistics(
+                hass,
+                days_back=0,
+                trigger_refresh_on_auth_failure=False,
+            )
+        except Exception as stats_err:
+            _LOGGER.warning(
+                "Statistics update after refresh failed (%s): %s",
+                trigger_reason,
+                stats_err,
+            )
+
+        if notify_on_success:
+            await hass.services.async_call(
+                "persistent_notification",
+                "create",
+                {
+                    "title": "PSEG Integration: Cookie Refreshed",
+                    "message": "Successfully refreshed your PSEG authentication cookie.",
+                    "notification_id": "psegli_cookie_refreshed",
+                },
+            )
+
+        return True
+
+    async def _refresh_cookie_shared(
+        trigger_reason: str,
+        notify_on_success: bool = False,
+        notify_on_failure: bool = False,
+    ) -> bool:
+        """Single-flight wrapper so concurrent callers share one refresh task."""
+        in_flight = domain_data.get(_REFRESH_IN_PROGRESS_TASK)
+        current = asyncio.current_task()
+        if in_flight and not in_flight.done():
+            if in_flight is current:
+                _LOGGER.debug(
+                    "Refresh requested from active refresh task (%s); skipping",
+                    trigger_reason,
+                )
+                return False
+            _LOGGER.debug(
+                "Refresh already in progress; waiting for result (%s)",
+                trigger_reason,
+            )
+            return await in_flight
+
+        task = asyncio.create_task(
+            _refresh_cookie_once(
+                trigger_reason=trigger_reason,
+                notify_on_success=notify_on_success,
+                notify_on_failure=notify_on_failure,
+            )
+        )
+        domain_data[_REFRESH_IN_PROGRESS_TASK] = task
+        try:
+            return await task
+        except Exception as err:
+            _LOGGER.error("Failed to refresh cookie (%s): %s", trigger_reason, err)
+            if notify_on_failure:
+                await hass.services.async_call(
+                    "persistent_notification",
+                    "create",
+                    {
+                        "title": "PSEG Integration: Cookie Refresh Error",
+                        "message": f"Error refreshing your PSEG authentication cookie: {err}",
+                        "notification_id": "psegli_cookie_refresh_error",
+                    },
+                )
+            return False
+        finally:
+            if domain_data.get(_REFRESH_IN_PROGRESS_TASK) is task:
+                domain_data.pop(_REFRESH_IN_PROGRESS_TASK, None)
+
+    async def _schedule_auth_failure_refresh() -> None:
+        """Coalesce immediate refresh triggers after update auth failures."""
+        pending = domain_data.get(_PENDING_AUTH_REFRESH_TASK)
+        if pending and not pending.done():
+            _LOGGER.debug("Auth-failure refresh already scheduled")
+            return
+
+        async def _delayed_refresh() -> None:
+            try:
+                await asyncio.sleep(_AUTH_FAILURE_REFRESH_DELAY_SECONDS)
+                await _refresh_cookie_shared(
+                    trigger_reason="update_auth_failure",
+                    notify_on_success=False,
+                    notify_on_failure=True,
+                )
+            except asyncio.CancelledError:
+                _LOGGER.debug("Auth-failure refresh task cancelled")
+                raise
+            finally:
+                if domain_data.get(_PENDING_AUTH_REFRESH_TASK) is task:
+                    domain_data.pop(_PENDING_AUTH_REFRESH_TASK, None)
+
+        task = asyncio.create_task(_delayed_refresh())
+        domain_data[_PENDING_AUTH_REFRESH_TASK] = task
+
     # Business logic for updating statistics — called directly by service handler
     # and by internal callers (cookie refresh, scheduler) without the fake Call object.
-    async def _do_update_statistics(hass_ref: HomeAssistant, days_back: int = 0) -> None:
+    async def _do_update_statistics(
+        hass_ref: HomeAssistant,
+        days_back: int = 0,
+        trigger_refresh_on_auth_failure: bool = True,
+    ) -> bool:
         """Fetch PSEG data and update HA statistics."""
         _LOGGER.info("Statistics update started (days_back: %d)", days_back)
 
         active_entry = _get_active_entry(hass_ref)
         if active_entry is None:
-            return
+            return False
 
         try:
             current_client = hass_ref.data[DOMAIN][active_entry.entry_id]
@@ -221,15 +458,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             if "chart_data" in historical_data:
                 await _process_chart_data(hass_ref, historical_data["chart_data"])
                 _LOGGER.info("Statistics update completed successfully")
+                _reset_auth_failure_counter("successful statistics update")
+                return True
             else:
                 _LOGGER.warning("No chart data found in response")
+                return False
 
         except InvalidAuth as e:
             _LOGGER.error("Authentication failed during update: %s", e)
-            _LOGGER.debug("Cookie refresh will be attempted at the next scheduled time (XX:00 or XX:30)")
+            await _record_auth_failure("update_auth_failure")
+            if trigger_refresh_on_auth_failure:
+                _LOGGER.info(
+                    "Scheduling cookie refresh in %ds due to update auth failure",
+                    _AUTH_FAILURE_REFRESH_DELAY_SECONDS,
+                )
+                await _schedule_auth_failure_refresh()
+            return False
 
         except Exception as e:
             _LOGGER.error("Failed to update statistics: %s", e)
+            return False
 
     # Service handler delegates to business logic
     async def async_update_statistics_manual(call: Any) -> None:
@@ -249,109 +497,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     async def async_refresh_cookie(call: Any) -> None:
         """Manually refresh the PSEG authentication cookie."""
         _LOGGER.debug("Cookie refresh service called")
-
-        active_entry = _get_active_entry(hass)
-        if active_entry is None:
-            return
-
-        try:
-            username = active_entry.data.get(CONF_USERNAME)
-            password = active_entry.data.get(CONF_PASSWORD)
-
-            if not username or not password:
-                _LOGGER.error("No credentials available for cookie refresh")
-                return
-
-            if not await check_addon_health():
-                _LOGGER.error("Addon not available or unhealthy, cannot refresh cookie")
-                return
-
-            cookies = await get_fresh_cookies(username, password)
-
-            if cookies == CAPTCHA_REQUIRED:
-                _LOGGER.warning("reCAPTCHA challenge triggered — try again")
-                await hass.services.async_call(
-                    "persistent_notification",
-                    "create",
-                    {
-                        "title": "PSEG Integration: reCAPTCHA Required",
-                        "message": (
-                            "reCAPTCHA challenge was triggered. Try calling "
-                            "refresh_cookie again — it usually passes after "
-                            "a few attempts."
-                        ),
-                        "notification_id": "psegli_captcha_required",
-                    },
-                )
-            elif cookies:
-                current_client = hass.data[DOMAIN][active_entry.entry_id]
-
-                # Validate BEFORE persisting — rollback on failure
-                old_cookie = current_client.cookie
-                current_client.update_cookie(cookies)
-                try:
-                    await hass.async_add_executor_job(current_client.test_connection)
-                except Exception:
-                    current_client.update_cookie(old_cookie)
-                    raise
-                _LOGGER.debug("New cookie validation successful")
-
-                if hasattr(active_entry, 'runtime_data') and active_entry.runtime_data:
-                    coord = active_entry.runtime_data
-                    if hasattr(coord, 'client'):
-                        coord.client.update_cookie(cookies)
-
-                hass.config_entries.async_update_entry(
-                    active_entry,
-                    data={**active_entry.data, CONF_COOKIE: cookies},
-                )
-
-                _record_cookie_obtained(hass)
-                _LOGGER.info("Successfully refreshed cookie via addon")
-
-                # Fetch and save energy data with the new cookie
-                try:
-                    await _do_update_statistics(hass, days_back=0)
-                    _LOGGER.debug("Energy data saved after cookie refresh")
-                except Exception as stats_err:
-                    _LOGGER.warning("Statistics update after refresh failed: %s", stats_err)
-
-                await hass.services.async_call(
-                    "persistent_notification",
-                    "create",
-                    {
-                        "title": "PSEG Integration: Cookie Refreshed",
-                        "message": "Successfully refreshed your PSEG authentication cookie.",
-                        "notification_id": "psegli_cookie_refreshed",
-                    },
-                )
-
-            else:
-                _LOGGER.error("Addon failed to provide fresh cookies")
-                await hass.services.async_call(
-                    "persistent_notification",
-                    "create",
-                    {
-                        "title": "PSEG Integration: Cookie Refresh Failed",
-                        "message": (
-                            "Failed to refresh your PSEG authentication cookie. "
-                            "Please check the addon status or provide a cookie manually."
-                        ),
-                        "notification_id": "psegli_cookie_refresh_failed",
-                    },
-                )
-
-        except Exception as e:
-            _LOGGER.error("Failed to refresh cookie: %s", e)
-            await hass.services.async_call(
-                "persistent_notification",
-                "create",
-                {
-                    "title": "PSEG Integration: Cookie Refresh Error",
-                    "message": f"Error refreshing your PSEG authentication cookie: {e}",
-                    "notification_id": "psegli_cookie_refresh_error",
-                },
-            )
+        await _refresh_cookie_shared(
+            trigger_reason="manual_service",
+            notify_on_success=True,
+            notify_on_failure=True,
+        )
 
     if not hass.services.has_service(DOMAIN, "refresh_cookie"):
         hass.services.async_register(
@@ -399,60 +549,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 except PSEGLIError:
                     _LOGGER.warning("Network error during cookie check, will attempt refresh")
 
-            if not await check_addon_health():
-                _LOGGER.warning("Addon not available, skipping scheduled cookie refresh")
-                return
-
-            cookies = await get_fresh_cookies(username, password)
-
-            if cookies == CAPTCHA_REQUIRED:
-                _LOGGER.warning("reCAPTCHA challenge triggered during scheduled refresh")
-                await hass.services.async_call(
-                    "persistent_notification",
-                    "create",
-                    {
-                        "title": "PSEG Integration: reCAPTCHA Required",
-                        "message": (
-                            "reCAPTCHA challenge was triggered during scheduled "
-                            "cookie refresh. The next scheduled attempt will likely succeed."
-                        ),
-                        "notification_id": "psegli_captcha_required",
-                    },
-                )
-            elif cookies:
-                current_client = hass.data[DOMAIN][active_entry.entry_id]
-
-                # Validate BEFORE persisting — rollback on failure
-                old_cookie = current_client.cookie
-                current_client.update_cookie(cookies)
-                try:
-                    await hass.async_add_executor_job(current_client.test_connection)
-                except Exception:
-                    current_client.update_cookie(old_cookie)
-                    raise
-                _LOGGER.debug("New cookie validation successful")
-
-                if hasattr(active_entry, 'runtime_data') and active_entry.runtime_data:
-                    coord = active_entry.runtime_data
-                    if hasattr(coord, 'client'):
-                        coord.client.update_cookie(cookies)
-
-                hass.config_entries.async_update_entry(
-                    active_entry,
-                    data={**active_entry.data, CONF_COOKIE: cookies},
-                )
-
-                _record_cookie_obtained(hass)
-                _LOGGER.info("Scheduled cookie refresh completed successfully")
-
-                try:
-                    await _do_update_statistics(hass, days_back=0)
-                    _LOGGER.debug("Statistics update completed with fresh cookies")
-                except Exception as stats_err:
-                    _LOGGER.error("Statistics update failed with fresh cookies: %s", stats_err)
-
-            else:
-                _LOGGER.warning("Addon failed to provide fresh cookies during scheduled refresh")
+            await _refresh_cookie_shared(
+                trigger_reason="scheduled",
+                notify_on_success=False,
+                notify_on_failure=False,
+            )
 
         except Exception as e:
             _LOGGER.error("Failed to refresh cookie during scheduled refresh: %s", e)
@@ -698,6 +799,10 @@ async def async_update_options(hass: HomeAssistant, entry: ConfigEntry) -> None:
             coord = entry.runtime_data
             if hasattr(coord, 'client'):
                 coord.client.update_cookie(new_cookie)
+        domain_data = hass.data.get(DOMAIN, {})
+        if domain_data.get(_AUTH_FAILURE_COUNT, 0):
+            domain_data[_AUTH_FAILURE_COUNT] = 0
+            _LOGGER.debug("Reset auth failure counter after manual cookie update")
         _LOGGER.debug("Applied updated cookie to live client")
     else:
         _LOGGER.debug("Options updated — no cookie change to apply")
@@ -738,6 +843,34 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
             domain_data.pop('_scheduled_task_running', None)
             _LOGGER.debug("Cleaned up scheduled task flag (last instance)")
+
+            # Cancel any pending auth-failure refresh trigger task.
+            pending_refresh = domain_data.get(_PENDING_AUTH_REFRESH_TASK)
+            if pending_refresh is not None:
+                try:
+                    if not pending_refresh.done():
+                        pending_refresh.cancel()
+                        try:
+                            await pending_refresh
+                        except asyncio.CancelledError:
+                            pass
+                except Exception as e:
+                    _LOGGER.warning("Error cancelling pending auth refresh task: %s", e)
+                domain_data.pop(_PENDING_AUTH_REFRESH_TASK, None)
+
+            # Cancel any in-flight shared refresh task.
+            in_flight_refresh = domain_data.get(_REFRESH_IN_PROGRESS_TASK)
+            if in_flight_refresh is not None:
+                try:
+                    if not in_flight_refresh.done():
+                        in_flight_refresh.cancel()
+                        try:
+                            await in_flight_refresh
+                        except asyncio.CancelledError:
+                            pass
+                except Exception as e:
+                    _LOGGER.warning("Error cancelling in-flight refresh task: %s", e)
+                domain_data.pop(_REFRESH_IN_PROGRESS_TASK, None)
 
     # Only remove services when the last entry is being unloaded
     if not remaining_loaded_entries:
