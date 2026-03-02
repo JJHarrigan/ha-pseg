@@ -20,7 +20,7 @@
 | 4.9 | **COMPLETE** | `45c1b20` | Codex R3 fixes: validate-before-persist, 5xx vs auth error |
 | 4.10 | **COMPLETE** | `22c5a64` | Codex R4 fix: unload cleanup checks loaded entries only + lifecycle tests |
 | 4.11 | **COMPLETE** | `cceda21` | Integration lifecycle + config flow tests (27→67 tests) |
-| 4.12 | **COMPLETE** | pending | Backlog cleanup: listener leak, non-JSON logging, CAPTCHA sentinel, TOCTOU |
+| 4.12 | **COMPLETE** | `0583580` | Backlog cleanup: listener leak, non-JSON logging, CAPTCHA sentinel, TOCTOU |
 | 5 | Pending | — | Post-deploy |
 
 ### Phase 4.6 — Combined Self-Review + Agent Review Findings
