@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+- Add retry with jittered backoff for add-on `/login` transport failures (connection error, timeout, server disconnected)
+  - Up to 3 attempts with increasing delay
+  - Terminal responses (CAPTCHA, invalid credentials) are never retried
+  - Implements Phase 3.1 of auth refresh stabilization plan
+
 ## 2.5.0.5
 
 - Use background task API for scheduled cookie refresh to avoid HA startup blocking warnings
