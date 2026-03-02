@@ -10,6 +10,24 @@ Assistant.
 2. Fallback A: copy cookies from your browser session.
 3. Fallback B: use repo scripts to generate/test cookie strings, then paste.
 
+## Operational Learnings (From Live HA Runs)
+
+These behaviors are expected and important for troubleshooting:
+
+1. A "new" cookie may be identical to your previous one.
+- If your browser session never logged out, copying cookies again may return the
+  same values.
+- This can still fix HA if HA had stale/invalid stored cookie state.
+
+2. `Server disconnected` during `psegli.refresh_cookie` means add-on request path failed.
+- This points to add-on connectivity/runtime instability (not necessarily wrong
+  username/password).
+- Check add-on logs at the same timestamp as the HA error.
+
+3. `Chart setup redirected to: /` means auth failed in chart context.
+- This can happen even when basic dashboard checks look healthy.
+- Treat this as an auth/session failure for data retrieval.
+
 ## Cookie Format Required by Integration
 
 Use exactly:

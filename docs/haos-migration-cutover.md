@@ -343,6 +343,37 @@ Action:
 Validation (must pass):
 - Cookie age logs appear when relevant (used for refresh-tuning decisions)
 
+### Step 5.4 - Watch for known auth-failure signatures
+
+Action:
+- Check HA core logs for these exact patterns and respond as noted.
+
+Pattern A:
+- `custom_components.psegli.auto_login] Failed to connect to addon: Server disconnected`
+- Meaning: add-on `/login` request dropped mid-flight.
+- Response:
+1. Verify add-on is running.
+2. Check add-on logs at the same timestamp.
+3. If recurring, use manual cookie injection to restore service immediately.
+
+Pattern B:
+- `custom_components.psegli.psegli] Chart setup redirected to: /`
+- Followed by:
+  - `Authentication failed during update: Chart setup failed — hourly context not established`
+- Meaning: cookie/session failed for chart context (data path auth failure).
+- Response:
+1. Run `psegli.refresh_cookie`.
+2. If refresh fails, inject manual cookie and verify `psegli.update_statistics`.
+3. Continue monitoring scheduled runs at `:00`/`:30`.
+
+Pattern C:
+- automation template errors like:
+  - `Template variable error: 'dict object' has no attribute 'event'`
+- Meaning: automation used `trigger.event...` in a non-event execution path (for example manual run).
+- Response:
+1. Test automation via the actual triggering event, not `Run actions`.
+2. Use guarded templates that tolerate missing trigger context.
+
 ---
 
 ## Rollback Plan (If Cutover Fails)

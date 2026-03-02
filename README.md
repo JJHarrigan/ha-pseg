@@ -31,6 +31,7 @@ What this means operationally:
 
 Detailed implementation rationale and phase-by-phase history:
 - [`docs/plans/2026-03-01-robustness-overhaul-plan.md`](docs/plans/2026-03-01-robustness-overhaul-plan.md)
+- [`docs/plans/2026-03-02-auth-refresh-stabilization-plan.md`](docs/plans/2026-03-02-auth-refresh-stabilization-plan.md)
 - [`docs/auth-overhaul.md`](docs/auth-overhaul.md)
 
 ## Installation

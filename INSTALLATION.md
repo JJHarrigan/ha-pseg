@@ -200,6 +200,15 @@ Script-assisted alternative:
 - Run `psegli.update_statistics` with `days_back: 0`
 - Check logs under `custom_components.psegli`
 
+If logs show:
+- `Chart setup redirected to: /`
+- `Authentication failed during update: Chart setup failed — hourly context not established`
+
+Then:
+1. Run `psegli.refresh_cookie`.
+2. If refresh fails with add-on connectivity errors (`Server disconnected`), use manual cookie mode immediately.
+3. Validate recovery with `psegli.update_statistics` (`days_back: 0`).
+
 ## Related Docs
 
 - Root overview: [`README.md`](README.md)
