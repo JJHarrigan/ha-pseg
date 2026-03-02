@@ -218,6 +218,9 @@ Implement incremental fetch planning:
 - Keep `End` at current date.
 - Filter/ignore points already ingested (`point.timestamp <= last_successful_datapoint_at`)
   before writing statistics.
+- Preserve cumulative statistics semantics:
+  - continue deriving baseline from recorder (`get_last_cumulative_kwh`) per
+    statistic series, then append only newly accepted points.
 
 ### 4.2 Add bounded automatic backfill for larger gaps
 
