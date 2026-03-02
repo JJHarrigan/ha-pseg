@@ -1,5 +1,11 @@
-# Test and development dependencies. Install in a venv and run: python -m pytest -q
-# From repo root so custom_components is importable.
+# Test and development dependencies.
+# Install in a venv from repo root so custom_components is importable.
+#
+# Important:
+# - Use Python 3.12 for local test runs (matches current validated setup).
+# - Home Assistant is pinned to 2025.1.4 for deterministic tests.
+#   Newer HA releases (2026.x) currently require additional test-harness
+#   adaptation (frame helper + options flow API changes).
 
 # Test runner
 pytest>=7.0.0
@@ -16,7 +22,7 @@ aiohttp>=3.8.0
 pytz
 
 # Home Assistant (for custom_components imports)
-homeassistant>=2024.1.0
+homeassistant==2025.1.4
 
 # Addon tests (run.py, auto_login.py) - need addon deps on path
 fastapi>=0.104.0

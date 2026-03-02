@@ -12,7 +12,10 @@ PSEG Long Island energy usage integration for Home Assistant. Two components:
 ## Commands
 
 ```bash
-# Test environment: from repo root: python3 -m venv .venv && .venv/bin/pip install -r requirements-dev.txt
+# Test environment: from repo root:
+#   python3.12 -m venv .venv
+#   .venv/bin/pip install --upgrade pip
+#   .venv/bin/pip install -r requirements-dev.txt
 .venv/bin/python -m pytest -q                     # run full test suite from repo root
 .venv/bin/python -m pytest -q tests/test_init.py   # run a single test file
 cd addons/psegli-automation && HEADED=1 python run.py  # add-on with visible browser
@@ -25,7 +28,7 @@ docker build -t psegli-automation addons/psegli-automation/
 Config Flow → auto_login.py (aiohttp→add-on) → PSEGAutoLogin (Playwright) → mysmartenergy login → cookie
 
 Scheduled (:00/:30):
-  test_connection() → valid? skip : re-login via add-on
+  test_data_path() → valid? skip : re-login via add-on
   get_usage_data() → Dashboard/Chart/ChartData APIs → async_add_external_statistics
 ```
 

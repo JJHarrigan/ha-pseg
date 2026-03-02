@@ -108,9 +108,16 @@ The robustness-overhaul branch work now merged to `main` includes test coverage 
 **Set up a test environment** (from repo root):
 
 ```bash
-python3 -m venv .venv
+# Use Python 3.12 for the validated local test matrix.
+python3.12 -m venv .venv
+.venv/bin/pip install --upgrade pip
 .venv/bin/pip install -r requirements-dev.txt
 ```
+
+Notes:
+- `requirements-dev.txt` pins Home Assistant to `2025.1.4` for deterministic test behavior.
+- Running tests against newer HA versions (2026.x) currently needs additional
+  test-harness updates.
 
 Run tests locally:
 
