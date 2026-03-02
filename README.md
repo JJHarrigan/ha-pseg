@@ -66,6 +66,10 @@ Ongoing refresh:
 - Scheduled checks run at `XX:00` and `XX:30`.
 - If cookie is still valid, refresh is skipped and stats can still update.
 - If cookie is expired, integration requests fresh cookie from add-on.
+- Data fetch currently uses a broad recent window (`days_back: 0`, about last 24h)
+  each scheduled cycle for resilience.
+- Extended outage recovery may still require manual backfill:
+  `psegli.update_statistics` with larger `days_back`.
 
 Phase 5 observability:
 - Integration logs cookie age (runtime telemetry) at key points:

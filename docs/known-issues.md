@@ -95,6 +95,38 @@ Operator action:
 Status:
 - HA notification architecture limitation, not specific to PSEG integration code.
 
+### 7) Routine updates currently fetch a broad recent window
+
+What happens:
+- Scheduled updates currently request a broad recent window (`days_back: 0`,
+  effectively around the last 24h) on each cycle.
+- This is robust for short outages but heavier than necessary for steady-state
+  polling.
+
+Operator action:
+- For now, keep default behavior.
+- If extended downtime occurred, run manual backfill:
+  `psegli.update_statistics` with larger `days_back`.
+
+Status:
+- Planned improvement: incremental fetch based on last successful datapoint with
+  bounded auto-backfill (see stabilization plan).
+
+### 8) Extended outages may still require manual backfill today
+
+What happens:
+- Short gaps are usually recovered automatically by the broad recent fetch.
+- Long gaps can exceed what is recovered automatically and may leave missing
+  historical periods unless manual backfill is run.
+
+Operator action:
+- Use `psegli.update_statistics` with a suitable `days_back` to recover missed
+  history.
+
+Status:
+- Planned improvement: bounded automatic catch-up/backfill in stabilization
+  plan.
+
 ## Hard Boundaries (Not Fixable in Integration Alone)
 
 1. Solving CAPTCHA without human interaction.

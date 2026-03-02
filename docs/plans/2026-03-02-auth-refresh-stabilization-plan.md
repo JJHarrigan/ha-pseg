@@ -32,6 +32,7 @@ This indicates a gap between lightweight cookie checks and actual chart-context 
    - chart-context auth failure loop
 5. Operators can run with high observability initially, then reduce noise later via config.
 6. Manual cookie entry remains fallback, not primary recovery path.
+7. Routine data sync avoids unnecessary broad fetch windows while preserving automatic catch-up.
 
 ---
 
@@ -58,6 +59,11 @@ Error mapping requirements for probe path:
 - 5xx or transport failures -> `PSEGLIError` (transient/retryable)
 - 4xx/login redirect/chart redirect auth failures -> `InvalidAuth`
 
+Implementation requirement:
+- Probe wrapper must catch transport/HTTP exceptions raised from
+  `_setup_chart_context()` and map them to `PSEGLIError` so 5xx is never
+  misclassified as auth failure.
+
 Do not rely only on `/Dashboard` success as auth-valid signal.
 
 ### 1.2 Use data-path probe where scheduler currently uses lightweight check
@@ -77,7 +83,8 @@ When `_do_update_statistics` hits auth errors such as:
 - `Chart setup redirected to: /`
 - chart setup auth failure
 
-mark state as “refresh required” and trigger refresh logic immediately (or very short delay), instead of waiting for next cycle only.
+mark state as “refresh required” and trigger refresh logic with a short
+coalescing delay (`10s`) instead of waiting for next cycle only.
 
 Re-entrancy requirements:
 - Add refresh lock/flag (`_refresh_in_progress`) to prevent parallel refresh attempts from:
@@ -85,6 +92,8 @@ Re-entrancy requirements:
   - manual `psegli.refresh_cookie`
   - immediate-recovery trigger from failed update
 - Use one shared refresh helper for all three call sites to keep behavior/logging aligned.
+- If refresh is already in progress, additional callers wait for the in-flight
+  refresh and receive the same final result (single-flight behavior).
 
 ### 2.2 Prevent infinite fail loops
 
@@ -99,6 +108,11 @@ Failure loop policy:
 - Retry cadence:
   - continue attempts each scheduled cycle (simple, predictable),
   - but apply notification cooldown/suppression to avoid alert storms.
+- Cooldown window:
+  - `24h` for repeated `psegli_chart_auth_failed_loop` notifications.
+- Manual intervention behavior:
+  - manual cookie update via options flow resets `consecutive_auth_failures`
+    immediately (does not wait for next successful stats run).
 
 ---
 
@@ -141,7 +155,12 @@ Add explicit runtime controls (Options flow) so operators can tune verbosity:
 - `diagnostic_level`: `standard` (default) or `verbose`
 - `notification_level`: `critical_only` (default) or `verbose`
 
-Signal model (stored in `hass.data[DOMAIN]` and exposed via diagnostics/service payloads):
+Backward compatibility:
+- Existing config entries without these options default to:
+  - `diagnostic_level=standard`
+  - `notification_level=critical_only`
+
+Signal model (stored in `hass.data[DOMAIN]` and exposed via diagnostics + service):
 - `last_auth_probe_at`
 - `last_auth_probe_result` (`ok`, `invalid_auth`, `transient_error`)
 - `last_refresh_attempt_at`
@@ -150,7 +169,13 @@ Signal model (stored in `hass.data[DOMAIN]` and exposed via diagnostics/service 
 - `last_refresh_failure_category` (from 3.2 categories)
 - `consecutive_auth_failures`
 - `last_successful_update_at`
+- `last_successful_datapoint_at` (max timestamp ingested)
 - `cookie_age_seconds` (when known)
+
+Signal access:
+- Include these fields in config-entry diagnostics output.
+- Add a lightweight `psegli.get_status` service returning current signal snapshot
+  for dashboards/automations/debugging.
 
 Logging policy:
 - `standard`: one-line state transitions and actionable failures only.
@@ -162,7 +187,39 @@ Notification policy:
 
 ---
 
-## Phase 4 — Tests and Regression Coverage
+## Phase 4 — Incremental Data Window and Automatic Backfill
+
+### 4.1 Reduce routine fetch window using last successful datapoint
+
+Current behavior fetches roughly the last 24h on every scheduled run.
+
+Implement incremental fetch planning:
+- Track `last_successful_datapoint_at` (UTC) after successful ingestion.
+- Compute routine fetch start from:
+  - `last_successful_datapoint_at - overlap`, where overlap defaults to `1h`.
+- Because upstream chart API is date-granular (`Start`/`End` date strings),
+  normalize requested `Start` to that timestamp's date.
+- Keep `End` at current date.
+- Filter/ignore points already ingested (`point.timestamp <= last_successful_datapoint_at`)
+  before writing statistics.
+
+### 4.2 Add bounded automatic backfill for larger gaps
+
+If detected gap between now and `last_successful_datapoint_at` exceeds routine window:
+- automatically widen fetch window to cover missing period.
+- cap automatic backfill with `max_auto_backfill_days` (default `30`).
+- if required gap exceeds cap:
+  - fetch up to cap,
+  - emit explicit notification instructing operator to run manual backfill
+    (`psegli.update_statistics` with larger `days_back`).
+
+Backfill reset conditions:
+- On successful catch-up, collapse back to routine incremental window.
+- Record last successful backfill range for diagnostics.
+
+---
+
+## Phase 5 — Tests and Regression Coverage
 
 Add tests that reproduce real failure sequence:
 
@@ -175,6 +232,14 @@ Add tests that reproduce real failure sequence:
    - `standard` vs `verbose` logging behavior
    - `critical_only` vs `verbose` notification behavior
    - signal fields update correctly on success/failure transitions
+7. In-flight refresh single-flight behavior:
+   - second caller waits for existing refresh and receives same outcome.
+8. Incremental data window behavior:
+   - fetch planning uses `last_successful_datapoint_at - 1h`.
+   - duplicate/old points are skipped.
+9. Automatic backfill behavior:
+   - gap > routine window triggers bounded backfill.
+   - gap > `max_auto_backfill_days` triggers operator notification.
 
 Also keep existing lifecycle/startup guarantees:
 - scheduler runs as background task
@@ -182,24 +247,26 @@ Also keep existing lifecycle/startup guarantees:
 
 ---
 
-## Phase 5 — Rollout and Validation
+## Phase 6 — Rollout and Validation
 
-### 5.1 Staged rollout checks
+### 6.1 Staged rollout checks
 
 After deployment:
 1. Force `psegli.update_statistics` and verify success.
 2. Force `psegli.refresh_cookie` and verify add-on path.
 3. Observe at least two scheduled checkpoints (`:00`/`:30`).
 
-### 5.2 Acceptance criteria
+### 6.2 Acceptance criteria
 
 All must be true:
 1. No sustained `Chart setup redirected to: /` loop over 24h.
 2. At least one simulated add-on disconnect is auto-recovered without manual cookie.
 3. No startup timeout/blocking warnings from PSEG scheduled task.
 4. Manual cookie remains optional fallback only.
-5. Simulated N=3 consecutive chart auth failures emits `psegli_chart_auth_failed_loop` exactly once per cooldown window.
+5. Simulated N=3 consecutive chart auth failures emits `psegli_chart_auth_failed_loop` exactly once per `24h` cooldown window.
 6. Operators can switch from `verbose` to `standard` and observe reduced log/notification volume without losing critical alerts.
+7. Routine scheduled updates avoid full 24h refetch in steady state (verified by logs/status signals).
+8. After simulated outage >24h, integration auto-catches up within configured backfill cap without manual intervention.
 
 ---
 
@@ -217,7 +284,7 @@ All must be true:
 2. CAPTCHA required but operator is unavailable; automation can alert but cannot solve CAPTCHA.
 3. Extended upstream outage where retries continue but data remains unavailable for prolonged periods.
 4. Browser-copied cookie may be near-expiry when pasted manually, causing short-lived recovery.
-5. Add-on process healthy but Playwright/browser runtime degraded in ways that surface as unknown runtime failures.
+5. Add-on process healthy but Playwright/browser runtime degraded in ways that surface as unknown runtime failures (`unknown_runtime_error`).
 
 ---
 
@@ -229,3 +296,4 @@ covering:
 2. immediate refresh-on-auth-failure
 3. add-on transport retry hardening
 4. new diagnostics/notifications/signals
+5. incremental fetch window + bounded automatic backfill

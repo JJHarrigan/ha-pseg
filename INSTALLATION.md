@@ -169,6 +169,10 @@ Script-assisted alternative:
 - If cookie validates, refresh is skipped.
 - If invalid, integration requests fresh cookie from add-on.
 - Manual refresh service is available: `psegli.refresh_cookie`.
+- Scheduled stats updates currently fetch a broad recent window (`days_back: 0`,
+  about the last 24h) for resilience.
+- If downtime exceeds what this recovers automatically, run manual backfill with
+  larger `days_back`.
 
 ## Verify Successful Operation
 
@@ -208,6 +212,10 @@ Then:
 1. Run `psegli.refresh_cookie`.
 2. If refresh fails with add-on connectivity errors (`Server disconnected`), use manual cookie mode immediately.
 3. Validate recovery with `psegli.update_statistics` (`days_back: 0`).
+
+If there was extended downtime and recent-window recovery is insufficient:
+1. Run `psegli.update_statistics` with larger `days_back` (for example 3, 7, 30).
+2. Validate that historical statistics appear for the missing period.
 
 For unresolved limitations and external-dependency edge cases, see:
 - [`docs/known-issues.md`](docs/known-issues.md)
