@@ -30,7 +30,8 @@ This indicates a gap between lightweight cookie checks and actual chart-context 
    - add-on connectivity failure
    - CAPTCHA challenge
    - chart-context auth failure loop
-5. Manual cookie entry remains fallback, not primary recovery path.
+5. Operators can run with high observability initially, then reduce noise later via config.
+6. Manual cookie entry remains fallback, not primary recovery path.
 
 ---
 
@@ -43,6 +44,20 @@ Implement a synchronous method (executor-run by integration) that validates the 
 - token extraction
 - chart context setup
 
+Implementation notes:
+- Reuse existing internals to avoid drift:
+  - `_get_dashboard_page()`
+  - `_setup_chart_context()`
+- Do **not** fetch chart data in the probe (`_get_chart_data()` is intentionally skipped).
+- Probe must be read-only for integration state:
+  - no statistics writes
+  - no config updates
+  - no cookie persistence side effects
+
+Error mapping requirements for probe path:
+- 5xx or transport failures -> `PSEGLIError` (transient/retryable)
+- 4xx/login redirect/chart redirect auth failures -> `InvalidAuth`
+
 Do not rely only on `/Dashboard` success as auth-valid signal.
 
 ### 1.2 Use data-path probe where scheduler currently uses lightweight check
@@ -50,6 +65,7 @@ Do not rely only on `/Dashboard` success as auth-valid signal.
 Replace “cookie still valid” determination in scheduled flow with the data-path probe result.
 - If probe fails with auth redirect/error, treat cookie as expired/invalid.
 - Proceed directly to refresh attempt.
+- If probe passes, still run normal `_do_update_statistics()` once (no probe chart data call).
 
 ---
 
@@ -63,12 +79,26 @@ When `_do_update_statistics` hits auth errors such as:
 
 mark state as “refresh required” and trigger refresh logic immediately (or very short delay), instead of waiting for next cycle only.
 
+Re-entrancy requirements:
+- Add refresh lock/flag (`_refresh_in_progress`) to prevent parallel refresh attempts from:
+  - scheduled loop
+  - manual `psegli.refresh_cookie`
+  - immediate-recovery trigger from failed update
+- Use one shared refresh helper for all three call sites to keep behavior/logging aligned.
+
 ### 2.2 Prevent infinite fail loops
 
 Track consecutive auth-failure count in `hass.data[DOMAIN]`.
-- After N consecutive failures, emit a dedicated persistent notification:
+Failure loop policy:
+- Threshold: `N = 3` consecutive auth failures.
+- After N failures, emit a dedicated persistent notification:
   - `psegli_chart_auth_failed_loop`
-- Continue bounded retries, but surface clear operator action.
+- Counter reset conditions:
+  - successful cookie refresh, or
+  - successful statistics update.
+- Retry cadence:
+  - continue attempts each scheduled cycle (simple, predictable),
+  - but apply notification cooldown/suppression to avoid alert storms.
 
 ---
 
@@ -80,6 +110,19 @@ On add-on connectivity failures (`Server disconnected`, timeout):
 - retry 2-3 times with short jittered backoff.
 - keep upper-bound latency reasonable.
 
+Scope:
+- Retries apply **only** to transport/connectivity failures:
+  - connection error
+  - timeout
+  - server disconnected
+- Do **not** retry terminal functional responses:
+  - `captcha_required`
+  - invalid credentials / explicit login failure response
+
+Location:
+- Implement retry policy in integration add-on client path
+  (`custom_components/psegli/auto_login.py`), not inside the add-on service.
+
 ### 3.2 Improved diagnostics
 
 Log refresh attempt IDs and classify failure reasons:
@@ -90,6 +133,32 @@ Log refresh attempt IDs and classify failure reasons:
 - unknown_runtime_error
 
 This avoids “generic refresh failed” ambiguity.
+These categories should drive both logs and notification text.
+
+### 3.3 Configurable observability and HA-facing signals
+
+Add explicit runtime controls (Options flow) so operators can tune verbosity:
+- `diagnostic_level`: `standard` (default) or `verbose`
+- `notification_level`: `critical_only` (default) or `verbose`
+
+Signal model (stored in `hass.data[DOMAIN]` and exposed via diagnostics/service payloads):
+- `last_auth_probe_at`
+- `last_auth_probe_result` (`ok`, `invalid_auth`, `transient_error`)
+- `last_refresh_attempt_at`
+- `last_refresh_reason` (`scheduled`, `update_auth_failure`, `manual_service`)
+- `last_refresh_result` (`success`, `failed`)
+- `last_refresh_failure_category` (from 3.2 categories)
+- `consecutive_auth_failures`
+- `last_successful_update_at`
+- `cookie_age_seconds` (when known)
+
+Logging policy:
+- `standard`: one-line state transitions and actionable failures only.
+- `verbose`: include probe/refresh decision breadcrumbs, retry decisions, and cooldown suppression events.
+
+Notification policy:
+- `critical_only`: CAPTCHA required, repeated auth-failure loop, sustained add-on unreachable condition.
+- `verbose`: include transient refresh-retry failures and recoveries.
 
 ---
 
@@ -97,9 +166,15 @@ This avoids “generic refresh failed” ambiguity.
 
 Add tests that reproduce real failure sequence:
 
-1. Dashboard check passes, chart setup redirects (`/`) -> scheduler must refresh.
+1. Data-path probe sees chart setup redirect (`/`) -> scheduler must refresh (no stale-valid decision).
 2. Add-on disconnect on first refresh attempt, success on second -> automatic recovery.
 3. Consecutive chart auth failures -> loop notification emitted.
+4. Re-entrancy guard prevents concurrent refresh attempts across scheduler/manual/immediate-recovery paths.
+5. Retry policy only retries transport failures and not CAPTCHA/invalid-credentials responses.
+6. Observability controls:
+   - `standard` vs `verbose` logging behavior
+   - `critical_only` vs `verbose` notification behavior
+   - signal fields update correctly on success/failure transitions
 
 Also keep existing lifecycle/startup guarantees:
 - scheduler runs as background task
@@ -123,6 +198,8 @@ All must be true:
 2. At least one simulated add-on disconnect is auto-recovered without manual cookie.
 3. No startup timeout/blocking warnings from PSEG scheduled task.
 4. Manual cookie remains optional fallback only.
+5. Simulated N=3 consecutive chart auth failures emits `psegli_chart_auth_failed_loop` exactly once per cooldown window.
+6. Operators can switch from `verbose` to `standard` and observe reduced log/notification volume without losing critical alerts.
 
 ---
 
@@ -131,3 +208,24 @@ All must be true:
 1. Replacing cookie auth model entirely.
 2. Reworking PSEG upstream endpoint behavior.
 3. Full mobile notification UX redesign.
+
+---
+
+## Remaining Edge Cases (After This Plan)
+
+1. PSEG invalidates sessions in ways that still return partially successful HTML before failing deeper in data fetch.
+2. CAPTCHA required but operator is unavailable; automation can alert but cannot solve CAPTCHA.
+3. Extended upstream outage where retries continue but data remains unavailable for prolonged periods.
+4. Browser-copied cookie may be near-expiry when pasted manually, causing short-lived recovery.
+5. Add-on process healthy but Playwright/browser runtime degraded in ways that surface as unknown runtime failures.
+
+---
+
+## Release Note
+
+Implementation of this plan should be shipped as a patch release with changelog entries
+covering:
+1. data-path probe adoption
+2. immediate refresh-on-auth-failure
+3. add-on transport retry hardening
+4. new diagnostics/notifications/signals
