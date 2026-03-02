@@ -21,7 +21,7 @@
 | 4.10 | **COMPLETE** | `22c5a64` | Codex R4 fix: unload cleanup checks loaded entries only + lifecycle tests |
 | 4.11 | **COMPLETE** | `cceda21` | Integration lifecycle + config flow tests (27→67 tests) |
 | 4.12 | **COMPLETE** | `0583580` | Backlog cleanup: listener leak, non-JSON logging, CAPTCHA sentinel, TOCTOU |
-| 5 | **COMPLETE** | pending | Cookie lifetime monitoring: age tracking + logging at check/expire/refresh |
+| 5 | **COMPLETE** | `22287bf` | Cookie lifetime monitoring: age tracking + logging at check/expire/refresh |
 
 ### Phase 4.6 — Combined Self-Review + Agent Review Findings
 
