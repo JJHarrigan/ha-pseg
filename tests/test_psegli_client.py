@@ -79,6 +79,118 @@ class TestPSEGLIClient:
         client.session = mock_requests_session
         assert client.test_connection() is True
 
+    def test_data_path_probe_successful(self, mock_requests_session):
+        """Data-path probe should succeed when dashboard and chart setup succeed."""
+        dashboard_response = MagicMock()
+        dashboard_response.status_code = 200
+        dashboard_response.url = "https://mysmartenergy.psegliny.com/Dashboard"
+        dashboard_response.text = (
+            '<input name="__RequestVerificationToken" type="hidden" value="token123" />'
+        )
+        dashboard_response.raise_for_status = MagicMock()
+        mock_requests_session.get.return_value = dashboard_response
+
+        chart_setup_response = MagicMock()
+        chart_setup_response.raise_for_status = MagicMock()
+        chart_setup_response.text = json.dumps({"AjaxResults": []})
+        mock_requests_session.post.return_value = chart_setup_response
+
+        client = PSEGLIClient("MM_SID=valid")
+        client.session = mock_requests_session
+
+        assert client.test_data_path() is True
+        mock_requests_session.post.assert_called_once()
+
+    def test_data_path_probe_does_not_fetch_chart_data(self, mock_requests_session):
+        """Probe must validate only dashboard -> chart setup and skip ChartData."""
+        dashboard_response = MagicMock()
+        dashboard_response.status_code = 200
+        dashboard_response.url = "https://mysmartenergy.psegliny.com/Dashboard"
+        dashboard_response.text = (
+            '<input name="__RequestVerificationToken" type="hidden" value="token123" />'
+        )
+        dashboard_response.raise_for_status = MagicMock()
+        mock_requests_session.get.return_value = dashboard_response
+
+        chart_setup_response = MagicMock()
+        chart_setup_response.raise_for_status = MagicMock()
+        chart_setup_response.text = json.dumps({"AjaxResults": []})
+        mock_requests_session.post.return_value = chart_setup_response
+
+        client = PSEGLIClient("MM_SID=valid")
+        client.session = mock_requests_session
+
+        with patch.object(client, "_get_chart_data", side_effect=AssertionError("should not fetch")) as mock_chart:
+            assert client.test_data_path() is True
+            mock_chart.assert_not_called()
+
+    def test_data_path_probe_chart_redirect_raises_invalid_auth(self, mock_requests_session):
+        """Chart setup redirect is an auth failure, not a transient error."""
+        dashboard_response = MagicMock()
+        dashboard_response.status_code = 200
+        dashboard_response.url = "https://mysmartenergy.psegliny.com/Dashboard"
+        dashboard_response.text = (
+            '<input name="__RequestVerificationToken" type="hidden" value="token123" />'
+        )
+        dashboard_response.raise_for_status = MagicMock()
+        mock_requests_session.get.return_value = dashboard_response
+
+        chart_setup_response = MagicMock()
+        chart_setup_response.raise_for_status = MagicMock()
+        chart_setup_response.text = json.dumps(
+            {"AjaxResults": [{"Action": "Redirect", "Value": "/"}]}
+        )
+        mock_requests_session.post.return_value = chart_setup_response
+
+        client = PSEGLIClient("MM_SID=valid")
+        client.session = mock_requests_session
+
+        with pytest.raises(InvalidAuth):
+            client.test_data_path()
+
+    def test_data_path_probe_chart_http_error_raises_psegli_error(self, mock_requests_session):
+        """Chart setup HTTP/5xx path should map to transient PSEGLIError."""
+        dashboard_response = MagicMock()
+        dashboard_response.status_code = 200
+        dashboard_response.url = "https://mysmartenergy.psegliny.com/Dashboard"
+        dashboard_response.text = (
+            '<input name="__RequestVerificationToken" type="hidden" value="token123" />'
+        )
+        dashboard_response.raise_for_status = MagicMock()
+        mock_requests_session.get.return_value = dashboard_response
+
+        chart_setup_response = MagicMock()
+        chart_setup_response.raise_for_status.side_effect = requests.exceptions.HTTPError(
+            "503 Server Error"
+        )
+        mock_requests_session.post.return_value = chart_setup_response
+
+        client = PSEGLIClient("MM_SID=valid")
+        client.session = mock_requests_session
+
+        with pytest.raises(PSEGLIError):
+            client.test_data_path()
+
+    def test_data_path_probe_chart_transport_error_raises_psegli_error(self, mock_requests_session):
+        """Chart setup transport failures should map to transient PSEGLIError."""
+        dashboard_response = MagicMock()
+        dashboard_response.status_code = 200
+        dashboard_response.url = "https://mysmartenergy.psegliny.com/Dashboard"
+        dashboard_response.text = (
+            '<input name="__RequestVerificationToken" type="hidden" value="token123" />'
+        )
+        dashboard_response.raise_for_status = MagicMock()
+        mock_requests_session.get.return_value = dashboard_response
+        mock_requests_session.post.side_effect = requests.exceptions.ConnectionError(
+            "connection reset"
+        )
+
+        client = PSEGLIClient("MM_SID=valid")
+        client.session = mock_requests_session
+
+        with pytest.raises(PSEGLIError):
+            client.test_data_path()
+
     def test_explicit_dates_respected(self, mock_requests_session):
         """Caller-provided start_date and end_date should be used directly."""
         # Set up mock responses for the full get_usage_data flow

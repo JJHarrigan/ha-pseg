@@ -1,6 +1,7 @@
 """Tests for __init__.py integration lifecycle."""
 
 import asyncio
+import inspect
 from datetime import datetime, timezone
 from unittest.mock import AsyncMock, MagicMock, patch
 
@@ -236,6 +237,13 @@ class TestAsyncSetupEntry:
             await async_setup_entry(mock_hass, mock_config_entry_no_cookie)
         # Should have sent a persistent notification
         mock_hass.services.async_call.assert_called()
+
+    def test_scheduled_check_uses_data_path_probe(self):
+        """Scheduled cookie-validity check should use data-path probe, not dashboard-only check."""
+        import custom_components.psegli as psegli_module
+
+        source = inspect.getsource(psegli_module)
+        assert "current_client.test_data_path" in source
 
 
 # ---------------------------------------------------------------------------

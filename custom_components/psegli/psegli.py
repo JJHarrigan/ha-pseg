@@ -78,6 +78,29 @@ class PSEGLIClient:
             _LOGGER.error("HTTP error from PSEG: %s", err)
             raise PSEGLIError(f"HTTP error: {err}") from err
 
+    def test_data_path(self) -> bool:
+        """Probe dashboard -> chart-context auth path without fetching chart data.
+
+        Raises:
+            InvalidAuth: Cookie/session rejected for dashboard or chart context.
+            PSEGLIError: Transport or HTTP failures (including chart setup 5xx).
+        """
+        end_date = datetime.now(tz=timezone.utc)
+        start_date = end_date - timedelta(days=1)
+
+        try:
+            _, request_token = self._get_dashboard_page()
+            self._setup_chart_context(request_token, start_date, end_date)
+            _LOGGER.debug("PSEG data-path probe successful")
+            return True
+        except InvalidAuth:
+            raise
+        except PSEGLIError:
+            raise
+        except requests.exceptions.RequestException as err:
+            _LOGGER.error("Transport/HTTP error during data-path probe: %s", err)
+            raise PSEGLIError(f"Transport/HTTP error: {err}") from err
+
     def _get_dashboard_page(self) -> tuple[str, str]:
         """Get the Dashboard page and extract RequestVerificationToken."""
         dashboard_response = self.session.get(

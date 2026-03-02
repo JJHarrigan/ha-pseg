@@ -384,7 +384,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             if cookie and active_entry.entry_id in hass.data.get(DOMAIN, {}):
                 current_client = hass.data[DOMAIN][active_entry.entry_id]
                 try:
-                    await hass.async_add_executor_job(current_client.test_connection)
+                    await hass.async_add_executor_job(current_client.test_data_path)
                     _log_cookie_age(hass, "scheduled check (still valid)")
                     # Still update statistics — energy data may have new readings
                     try:
