@@ -20,6 +20,7 @@ PSEG Long Island energy usage integration for Home Assistant. Two components:
 .venv/bin/python -m pytest -q tests/test_init.py   # run a single test file
 #
 # Recent HA compatibility lane (informational):
+#   python3.13.2+ required (HA 2026.2.0 needs >=3.13.2)
 #   python3.13 -m venv .venv-ha-recent
 #   .venv-ha-recent/bin/pip install --upgrade pip
 #   .venv-ha-recent/bin/pip install -r requirements-dev-ha-recent.txt

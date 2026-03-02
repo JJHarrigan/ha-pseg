@@ -8,7 +8,7 @@ jobs:
   pytest:
     name: "pytest (${{ matrix.lane }})"
     runs-on: ubuntu-latest
-    timeout-minutes: 45
+    timeout-minutes: 10
     continue-on-error: ${{ matrix.allow_failure }}
     strategy:
       fail-fast: false
@@ -19,7 +19,7 @@ jobs:
             requirements-file: requirements-dev.txt
             allow_failure: false
           - lane: ha-recent
-            python-version: "3.13"
+            python-version: "3.13.2"  # HA 2026.2.0 requires >=3.13.2
             requirements-file: requirements-dev-ha-recent.txt
             allow_failure: true
 
