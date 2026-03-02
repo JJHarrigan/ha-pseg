@@ -793,6 +793,7 @@ async def _process_chart_data(hass: HomeAssistant, chart_data: dict[str, Any]) -
     """Process chart data and update statistics."""
     local_tz = pytz.timezone('America/New_York')
     max_datapoint_at: datetime | None = None
+    any_write_failed = False
 
     for series_name, series_data in chart_data.items():
         try:
@@ -962,12 +963,16 @@ async def _process_chart_data(hass: HomeAssistant, chart_data: dict[str, Any]) -
 
             except Exception as e:
                 _LOGGER.error("Error calling async_add_external_statistics for %s: %s", statistic_id, e)
+                any_write_failed = True
         except Exception as e:
             _LOGGER.error("Error processing series %s: %s", series_name, e)
+            any_write_failed = True
             continue
 
-    # Record the most recent datapoint timestamp for observability
-    if max_datapoint_at is not None:
+    # Record the most recent datapoint timestamp only if all series
+    # wrote successfully — avoids misleading diagnostics when a write
+    # to the recorder fails partway through.
+    if max_datapoint_at is not None and not any_write_failed:
         hass.data.setdefault(DOMAIN, {})[_SIGNAL_LAST_SUCCESSFUL_DATAPOINT_AT] = (
             max_datapoint_at
         )

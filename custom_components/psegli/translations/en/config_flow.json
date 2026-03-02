@@ -12,7 +12,9 @@
       "title": "Reconfigure PSEG Long Island",
       "description": "Current cookie status: {current_cookie}",
       "data": {
-        "cookie": "Authentication Cookie (leave empty for auto-refresh)"
+        "cookie": "Authentication Cookie (leave empty for auto-refresh)",
+        "diagnostic_level": "Diagnostic Level",
+        "notification_level": "Notification Level"
       }
     }
   },

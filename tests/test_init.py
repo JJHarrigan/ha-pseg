@@ -854,3 +854,25 @@ class TestProcessChartDataSignals:
         assert _SIGNAL_LAST_SUCCESSFUL_DATAPOINT_AT in mock_hass.data[DOMAIN]
         recorded_at = mock_hass.data[DOMAIN][_SIGNAL_LAST_SUCCESSFUL_DATAPOINT_AT]
         assert recorded_at == datetime(2026, 3, 1, 6, 0, tzinfo=timezone.utc)
+
+    @patch("custom_components.psegli.get_last_cumulative_kwh", new_callable=AsyncMock)
+    @patch("custom_components.psegli.async_add_external_statistics", new_callable=AsyncMock)
+    async def test_write_failure_suppresses_datapoint_signal(
+        self, mock_add_stats, mock_get_last_cumulative, mock_hass
+    ):
+        """Write failure in async_add_external_statistics prevents datapoint signal update."""
+        mock_get_last_cumulative.return_value = 0.0
+        mock_add_stats.side_effect = Exception("recorder write failed")
+        mock_hass.data.setdefault(DOMAIN, {})
+
+        chart_data = {
+            "Off-Peak Usage": {
+                "valid_points": [
+                    {"timestamp": datetime(2026, 3, 1, 5, 0, tzinfo=timezone.utc), "value": 1.0},
+                ]
+            }
+        }
+
+        await _process_chart_data(mock_hass, chart_data)
+
+        assert _SIGNAL_LAST_SUCCESSFUL_DATAPOINT_AT not in mock_hass.data[DOMAIN]
