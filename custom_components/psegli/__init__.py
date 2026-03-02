@@ -24,6 +24,24 @@ from .auto_login import get_fresh_cookies, check_addon_health, CAPTCHA_REQUIRED
 
 _LOGGER = logging.getLogger(__name__)
 
+# Key for storing cookie acquisition timestamp in hass.data[DOMAIN]
+_COOKIE_OBTAINED_AT = "_cookie_obtained_at"
+
+
+def _log_cookie_age(hass: HomeAssistant, label: str) -> None:
+    """Log the age of the current cookie for lifetime monitoring."""
+    obtained_at = hass.data.get(DOMAIN, {}).get(_COOKIE_OBTAINED_AT)
+    if obtained_at:
+        age = datetime.now(tz=timezone.utc) - obtained_at
+        hours, remainder = divmod(int(age.total_seconds()), 3600)
+        minutes = remainder // 60
+        _LOGGER.info("Cookie age at %s: %dh %dm", label, hours, minutes)
+
+
+def _record_cookie_obtained(hass: HomeAssistant) -> None:
+    """Record the current time as when the cookie was obtained/refreshed."""
+    hass.data.setdefault(DOMAIN, {})[_COOKIE_OBTAINED_AT] = datetime.now(tz=timezone.utc)
+
 
 def _get_active_entry(hass: HomeAssistant) -> ConfigEntry | None:
     """Look up the first loaded config entry for this domain.
@@ -147,6 +165,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             entry,
             data={**entry.data, CONF_COOKIE: cookie},
         )
+        _record_cookie_obtained(hass)
+    else:
+        # Existing cookie validated — record as baseline if not already tracked
+        if _COOKIE_OBTAINED_AT not in hass.data.get(DOMAIN, {}):
+            _record_cookie_obtained(hass)
     hass.data[DOMAIN][entry.entry_id] = client
 
     # Create coordinator for automatic updates (like Opower)
@@ -263,6 +286,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     data={**active_entry.data, CONF_COOKIE: cookies},
                 )
 
+                _record_cookie_obtained(hass)
                 _LOGGER.info("Successfully refreshed cookie via addon")
 
                 # Fetch and save energy data with the new cookie
@@ -341,7 +365,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 current_client = hass.data[DOMAIN][active_entry.entry_id]
                 try:
                     await hass.async_add_executor_job(current_client.test_connection)
-                    _LOGGER.debug("Cookie still valid, skipping refresh")
+                    _log_cookie_age(hass, "scheduled check (still valid)")
                     # Still update statistics — energy data may have new readings
                     try:
                         await _do_update_statistics(hass, days_back=0)
@@ -350,6 +374,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         _LOGGER.warning("Statistics update failed: %s", stats_err)
                     return
                 except InvalidAuth:
+                    _log_cookie_age(hass, "cookie expired")
                     _LOGGER.debug("Cookie expired, proceeding with refresh")
                 except PSEGLIError:
                     _LOGGER.warning("Network error during cookie check, will attempt refresh")
@@ -397,6 +422,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                     data={**active_entry.data, CONF_COOKIE: cookies},
                 )
 
+                _record_cookie_obtained(hass)
                 _LOGGER.info("Scheduled cookie refresh completed successfully")
 
                 try:
