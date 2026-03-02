@@ -17,7 +17,7 @@
 | 4.6 | **COMPLETE** | `08a4c24` | Self-review: broken unload, validate-before-persist, unused imports |
 | 4.7 | **COMPLETE** | `3870404` | Codex round 2: multi-entry guard, timestamps, addon URL, test-cookie, verification overhead |
 | 4.8 | **COMPLETE** | `172d956` | Proactive self-review: ~30 findings from 4 parallel review agents |
-| 4.9 | **COMPLETE** | pending | Codex R3 fixes: validate-before-persist, 5xx vs auth error |
+| 4.9 | **COMPLETE** | `45c1b20` | Codex R3 fixes: validate-before-persist, 5xx vs auth error |
 | 5 | Pending | — | Post-deploy |
 
 ### Phase 4.6 — Combined Self-Review + Agent Review Findings
