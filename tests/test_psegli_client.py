@@ -117,3 +117,36 @@ class TestPSEGLIClient:
         client = PSEGLIClient("MM_SID=old")
         client.update_cookie("MM_SID=new_cookie_value")
         assert client.cookie == "MM_SID=new_cookie_value"
+
+    def test_dashboard_token_extraction_tolerates_attribute_order(self, mock_requests_session):
+        """Token extraction should not depend on exact input attribute order."""
+        response = MagicMock()
+        response.status_code = 200
+        response.url = "https://mysmartenergy.psegliny.com/Dashboard"
+        response.text = "<input value='token_reordered' id='x' type='hidden' name='__RequestVerificationToken' />"
+        mock_requests_session.get.return_value = response
+
+        client = PSEGLIClient("MM_SID=valid")
+        client.session = mock_requests_session
+        _, token = client._get_dashboard_page()
+
+        assert token == "token_reordered"
+
+    def test_dashboard_token_falls_back_to_cookie_when_input_missing(self, mock_requests_session):
+        """If dashboard omits hidden input, fallback to token present in cookie header."""
+        response = MagicMock()
+        response.status_code = 200
+        response.url = "https://mysmartenergy.psegliny.com/Dashboard"
+        response.text = "<html><body><h1>Dashboard</h1></body></html>"
+        mock_requests_session.get.return_value = response
+
+        client = PSEGLIClient(
+            "MM_SID=valid_sid; __RequestVerificationToken=token_from_cookie"
+        )
+        client.session = mock_requests_session
+        client.session.headers = {
+            "Cookie": "MM_SID=valid_sid; __RequestVerificationToken=token_from_cookie"
+        }
+        _, token = client._get_dashboard_page()
+
+        assert token == "token_from_cookie"

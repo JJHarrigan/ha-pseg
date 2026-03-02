@@ -98,18 +98,43 @@ class PSEGLIClient:
         if "login" in dashboard_response.url.lower() or "signin" in dashboard_response.url.lower():
             raise InvalidAuth("Cookie rejected — redirected to login page")
 
-        token_match = re.search(
-            r'name="__RequestVerificationToken" type="hidden" value="([^"]+)"',
-            dashboard_response.text,
-        )
-        if token_match:
-            request_token = token_match.group(1)
-            _LOGGER.debug("Found RequestVerificationToken (length=%d)", len(request_token))
-        else:
+        request_token = self._extract_request_verification_token(dashboard_response.text)
+        if not request_token:
             _LOGGER.error("Could not find RequestVerificationToken on /Dashboard")
             raise InvalidAuth("Could not find RequestVerificationToken on /Dashboard")
 
         return dashboard_response.text, request_token
+
+    def _extract_request_verification_token(self, html: str) -> str | None:
+        """Extract anti-forgery token from dashboard HTML or cookie header."""
+        soup = BeautifulSoup(html, "html.parser")
+
+        # Primary: hidden input in dashboard DOM (attribute order agnostic).
+        token_input = soup.find("input", attrs={"name": "__RequestVerificationToken"})
+        if token_input and token_input.get("value"):
+            token = token_input["value"]
+            _LOGGER.debug("Found RequestVerificationToken in HTML input (length=%d)", len(token))
+            return token
+
+        # Secondary: some responses surface the token as a meta tag.
+        token_meta = soup.find("meta", attrs={"name": "__RequestVerificationToken"})
+        if token_meta and token_meta.get("content"):
+            token = token_meta["content"]
+            _LOGGER.debug("Found RequestVerificationToken in HTML meta (length=%d)", len(token))
+            return token
+
+        # Fallback: extract token from cookie header when dashboard HTML omits form.
+        cookie_header = self.session.headers.get("Cookie", "")
+        cookie_match = re.search(
+            r"__RequestVerificationToken=([^;]+)",
+            cookie_header,
+        )
+        if cookie_match:
+            token = cookie_match.group(1).strip()
+            _LOGGER.debug("Found RequestVerificationToken in cookie header (length=%d)", len(token))
+            return token
+
+        return None
 
     def _setup_chart_context(self, request_token: str, start_date: datetime, end_date: datetime) -> None:
         """Set up the Chart context with hourly granularity."""
