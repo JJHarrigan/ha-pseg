@@ -80,4 +80,13 @@ Scheduled (:00/:30):
 
 ## Version
 
-`manifest.json` and `config.yaml` share version `2.5.0.5`. Update both when releasing.
+`VERSION` is the single source of truth for release version.
+
+Use:
+
+```bash
+python scripts/sync_version.py --set <MAJOR.MINOR.PATCH>
+```
+
+This updates all required hard-coded version fields (`manifest.json`,
+addon config/build/runtime metadata, and repository metadata).
