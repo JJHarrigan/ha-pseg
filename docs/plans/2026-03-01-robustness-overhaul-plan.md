@@ -18,6 +18,7 @@
 | 4.7 | **COMPLETE** | `3870404` | Codex round 2: multi-entry guard, timestamps, addon URL, test-cookie, verification overhead |
 | 4.8 | **COMPLETE** | `172d956` | Proactive self-review: ~30 findings from 4 parallel review agents |
 | 4.9 | **COMPLETE** | `45c1b20` | Codex R3 fixes: validate-before-persist, 5xx vs auth error |
+| 4.10 | **COMPLETE** | (pending commit) | Codex R4 fix: unload cleanup checks loaded entries only + lifecycle tests |
 | 5 | Pending | — | Post-deploy |
 
 ### Phase 4.6 — Combined Self-Review + Agent Review Findings
@@ -116,15 +117,33 @@ non-JSON handling (#4) downgraded to Low-Medium, OptionsFlow pattern (#8) and st
   Fix: 5xx now raises `PSEGLIError` (HA retries automatically), 4xx still raises `InvalidAuth`.
 
 **Revised backlog (stack-ranked):**
-1. Integration lifecycle tests (`__init__.py` setup/unload/services, `config_flow.py`) — biggest structural gap, high effort
-2. Addon `on_response` listener stacking — Low (browser is per-run, doesn't accumulate)
-3. Addon non-JSON login response handling — Low-Medium (timeout is graceful, but logs are opaque)
-4. CAPTCHA sentinel string vs enum mismatch — Low
-5. Integration `auto_login.py` TOCTOU + generic exception — Low
-6. OptionsFlow deprecated pattern — Very Low (unless targeting strict HA validation)
-7. Non-serializable datetime in `_parse_data` — Very Low (internal consumption only)
-8. `PSEGLIError` import path inconsistency — Very Low (cosmetic)
-9. `strings.json` missing at component root — Very Low
+1. Addon `on_response` listener stacking — Low (browser is per-run, doesn't accumulate)
+2. Addon non-JSON login response handling — Low-Medium (timeout is graceful, but logs are opaque)
+3. CAPTCHA sentinel string vs enum mismatch — Low
+4. Integration `auto_login.py` TOCTOU + generic exception — Low
+5. OptionsFlow deprecated pattern — Very Low (unless targeting strict HA validation)
+6. Non-serializable datetime in `_parse_data` — Very Low (internal consumption only)
+7. `PSEGLIError` import path inconsistency — Very Low (cosmetic)
+8. `strings.json` missing at component root — Very Low
+
+### Phase 4.10 — Codex Review Round 4 (Loaded-Entry Unload Guard)
+
+Codex identified one remaining lifecycle bug in unload cleanup:
+
+**Medium priority (fixed):**
+- 4.10.1: `async_unload_entry` determined “last instance” using all config entries
+  (`hass.config_entries.async_entries(DOMAIN)`), not loaded entries. If one
+  unloaded/disabled entry existed, scheduled task and services were not removed
+  even when no loaded entry remained.
+  Fix: compute `remaining_loaded_entries` from entry IDs present in
+  `hass.data[DOMAIN]` after removing the unloading entry, and use that for both
+  scheduled task cleanup and service removal.
+
+**Tests added (TDD):**
+- `tests/test_init_lifecycle.py::test_unload_cleans_up_when_only_unloaded_entries_remain`
+  reproduces the unloaded-entry edge case and verifies task/service cleanup.
+- `tests/test_init_lifecycle.py::test_unload_keeps_scheduler_when_another_loaded_entry_exists`
+  verifies scheduler/services stay registered when another loaded entry exists.
 
 ### Learnings & Adjustments
 
@@ -133,7 +152,7 @@ non-JSON handling (#4) downgraded to Low-Medium, OptionsFlow pattern (#8) and st
 - **Phase 1 adjustment:** The plan listed 1.5 (harden cleanup/setup_browser) as a separate step, but it was already implemented as part of 1.1 — `cleanup()` nulls all refs, guards double-close, and `setup_browser()` calls `cleanup()` on failure. No separate step needed.
 - **Phase 1 adjustment:** `config_flow.py` instance attrs `self._username`/`self._password` were added to `__init__()` but turned out to be unused — with MFA removed, there's no multi-step flow that needs to carry credentials between steps. The attrs are declared but harmless.
 - **Phase 3 learnings:** The shadowed `local_tz` (3.4) was already gone from the Phase 1 `__init__.py` rewrite. The +4h timestamp shift (3.5) already has a TODO comment from Phase 2. `get_last_cumulative_kwh` went from ~70 lines (7-day lookback with manual timestamp parsing) to ~15 lines using `get_last_statistics`. Service registration now guards with `has_service()` and unload only removes services when the last config entry is being unloaded. The scheduled task loop now properly re-raises `CancelledError` to allow clean shutdown.
-- **Phase 4 learnings:** Test infrastructure created with `pyproject.toml` (asyncio_mode=auto), 3 test files, 25 tests. Key mocking lessons: (1) `MagicMock` can't be awaited — use `AsyncMock` for anything in an `await` expression; (2) `session.headers = {}` fails because dict's `update` is read-only — use `MagicMock()` instead; (3) Testing Playwright requires careful `asyncio.sleep` patching since the login flow uses it for timing; (4) FastAPI endpoint tests use `httpx.ASGITransport` for in-process testing without a real server.
+- **Phase 4 learnings:** Test infrastructure created with `pyproject.toml` (asyncio_mode=auto), now 4 test files / 27 tests. Key mocking lessons: (1) `MagicMock` can't be awaited — use `AsyncMock` for anything in an `await` expression; (2) `session.headers = {}` fails because dict's `update` is read-only — use `MagicMock()` instead; (3) Testing Playwright requires careful `asyncio.sleep` patching since the login flow uses it for timing; (4) FastAPI endpoint tests use `httpx.ASGITransport` for in-process testing without a real server.
 - **Phase 2 learnings:** Made `PSEGLIClient` purely synchronous — removed `test_connection` async wrapper and `get_usage_data` async wrapper (both used `ThreadPoolExecutor`). Renamed the old `_test_connection_sync` to just `test_connection` and `_get_usage_data_sync` to `get_usage_data`. All 7 callsites in `__init__.py` and 3 in `config_flow.py` updated to use `hass.async_add_executor_job`. Also added `REQUEST_TIMEOUT = 30` constant and `timeout=REQUEST_TIMEOUT` to all 4 `requests` calls. Separated network errors (`ConnectionError`/`Timeout` → `PSEGLIError`) from auth errors (redirect to login → `InvalidAuth`). The `re` module import was moved to top of file (was previously `import re` inside a function). Added the Phase 3.5 TODO comment on the +4h timestamp shift.
 
 ---

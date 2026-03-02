@@ -659,11 +659,15 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     if DOMAIN in hass.data:
         hass.data[DOMAIN].pop(entry.entry_id, None)
 
-    # Clean up scheduled task if this is the last instance
+    # Remaining loaded entries are those still present in hass.data[DOMAIN].
     domain_data = hass.data.get(DOMAIN, {})
+    remaining_loaded_entries = [
+        e for e in hass.config_entries.async_entries(DOMAIN) if e.entry_id in domain_data
+    ]
+
+    # Clean up scheduled task if this is the last instance
     if domain_data.get('_scheduled_task_running'):
-        other_instances = [e for e in hass.config_entries.async_entries(DOMAIN) if e.entry_id != entry.entry_id]
-        if not other_instances:
+        if not remaining_loaded_entries:
             task = domain_data.get('_scheduled_task')
             if task is not None:
                 try:
@@ -682,8 +686,7 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.debug("Cleaned up scheduled task flag (last instance)")
 
     # Only remove services when the last entry is being unloaded
-    remaining = [e for e in hass.config_entries.async_entries(DOMAIN) if e.entry_id != entry.entry_id]
-    if not remaining:
+    if not remaining_loaded_entries:
         hass.services.async_remove(DOMAIN, "update_statistics")
         hass.services.async_remove(DOMAIN, "refresh_cookie")
 
