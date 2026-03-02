@@ -77,8 +77,10 @@ Validation (must pass):
 ### Step 1.3 - Verify add-on health endpoint
 
 Action:
-- Check add-on health endpoint:
+- Optional external/operator check of add-on health endpoint:
   - `http://<HA_HOST>:8000/health`
+- Note: the integration itself checks the add-on internally at
+  `http://localhost:8000/health` from inside Home Assistant.
 
 Expected response:
 ```json
@@ -115,12 +117,13 @@ Validation (must pass):
 
 ## Phase 3: Reconfigure Integration for New Auth Flow
 
-### Step 3.1 - Re-open integration config and force fresh cookie path
+### Step 3.1 - Reconfigure (Options flow) and force fresh cookie path
 
 Action:
-- Home Assistant -> `Settings -> Devices & Services -> PSEG Long Island -> Configure`
-- Confirm `username` and `password` are correct
+- Home Assistant -> `Settings -> Devices & Services -> PSEG Long Island -> Reconfigure/Configure`
 - Clear `cookie` (leave blank) and submit
+- If username/password are wrong, remove and re-add the integration
+  (credentials are set in the initial config flow, not options flow).
 
 Why:
 - This forces cookie retrieval through current add-on login flow
