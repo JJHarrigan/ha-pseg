@@ -25,7 +25,7 @@ PSEG Long Island energy usage integration for Home Assistant. Two components:
 #   .venv-ha-recent/bin/pip install --upgrade pip
 #   .venv-ha-recent/bin/pip install -r requirements-dev-ha-recent.txt
 #   .venv-ha-recent/bin/python -m pytest -q
-# If python3.13 is unavailable locally, rely on the ha-recent CI lane.
+# If Python 3.13.2+ is unavailable locally, rely on the ha-recent CI lane.
 cd addons/psegli-automation && HEADED=1 python run.py  # add-on with visible browser
 docker build -t psegli-automation addons/psegli-automation/
 ```

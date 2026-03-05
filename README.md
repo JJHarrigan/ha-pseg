@@ -118,7 +118,8 @@ Notes:
 - `requirements-dev.txt` is the stable lane (Home Assistant `2025.1.4`) used for
   merge-gating and deterministic local runs.
 - `requirements-dev-ha-recent.txt` is the compatibility lane (Home Assistant
-  `2026.2.0`) used to monitor forward-compatibility against newer HA changes.
+  `2026.2.0`) used to monitor forward-compatibility against newer HA changes and
+  requires Python `3.13.2+`.
 - Newer HA versions can fail due to test-harness API changes until adaptation is complete.
 
 Run the recent compatibility lane locally:
@@ -130,7 +131,7 @@ python3.13 -m venv .venv-ha-recent
 .venv-ha-recent/bin/python -m pytest -q
 ```
 
-If `python3.13` is not available locally, use the `ha-recent` CI lane as the
+If Python `3.13.2+` is not available locally, use the `ha-recent` CI lane as the
 forward-compatibility signal.
 
 Run tests locally:

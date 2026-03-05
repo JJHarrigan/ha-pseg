@@ -105,6 +105,37 @@ def _record_cookie_obtained(hass: HomeAssistant) -> None:
     hass.data.setdefault(DOMAIN, {})[_COOKIE_OBTAINED_AT] = datetime.now(tz=timezone.utc)
 
 
+def _get_status_signals(domain_data: dict[str, Any]) -> dict[str, Any]:
+    """Build the signal snapshot payload shared by service + diagnostics."""
+
+    def _iso(dt: datetime | None) -> str | None:
+        return dt.isoformat() if dt else None
+
+    obtained_at = domain_data.get(_COOKIE_OBTAINED_AT)
+    cookie_age = None
+    if obtained_at:
+        cookie_age = int((datetime.now(tz=timezone.utc) - obtained_at).total_seconds())
+
+    return {
+        "last_auth_probe_at": _iso(domain_data.get(_SIGNAL_LAST_AUTH_PROBE_AT)),
+        "last_auth_probe_result": domain_data.get(_SIGNAL_LAST_AUTH_PROBE_RESULT),
+        "last_refresh_attempt_at": _iso(domain_data.get(_SIGNAL_LAST_REFRESH_ATTEMPT_AT)),
+        "last_refresh_reason": domain_data.get(_SIGNAL_LAST_REFRESH_REASON),
+        "last_refresh_result": domain_data.get(_SIGNAL_LAST_REFRESH_RESULT),
+        "last_refresh_failure_category": domain_data.get(
+            _SIGNAL_LAST_REFRESH_FAILURE_CATEGORY
+        ),
+        "consecutive_auth_failures": domain_data.get(_AUTH_FAILURE_COUNT, 0),
+        "last_successful_update_at": _iso(
+            domain_data.get(_SIGNAL_LAST_SUCCESSFUL_UPDATE_AT)
+        ),
+        "last_successful_datapoint_at": _iso(
+            domain_data.get(_SIGNAL_LAST_SUCCESSFUL_DATAPOINT_AT)
+        ),
+        "cookie_age_seconds": cookie_age,
+    }
+
+
 def _get_active_entry(hass: HomeAssistant) -> ConfigEntry | None:
     """Look up the first loaded config entry for this domain.
 
@@ -625,45 +656,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Register the get_status service (Phase 3.3)
     async def async_get_status(call: Any) -> dict[str, Any]:
         """Return current integration status signals."""
-        def _iso(dt: datetime | None) -> str | None:
-            return dt.isoformat() if dt else None
-
-        obtained_at = domain_data.get(_COOKIE_OBTAINED_AT)
-        cookie_age = None
-        if obtained_at:
-            cookie_age = int(
-                (datetime.now(tz=timezone.utc) - obtained_at).total_seconds()
-            )
-        return {
-            "last_auth_probe_at": _iso(
-                domain_data.get(_SIGNAL_LAST_AUTH_PROBE_AT)
-            ),
-            "last_auth_probe_result": domain_data.get(
-                _SIGNAL_LAST_AUTH_PROBE_RESULT
-            ),
-            "last_refresh_attempt_at": _iso(
-                domain_data.get(_SIGNAL_LAST_REFRESH_ATTEMPT_AT)
-            ),
-            "last_refresh_reason": domain_data.get(
-                _SIGNAL_LAST_REFRESH_REASON
-            ),
-            "last_refresh_result": domain_data.get(
-                _SIGNAL_LAST_REFRESH_RESULT
-            ),
-            "last_refresh_failure_category": domain_data.get(
-                _SIGNAL_LAST_REFRESH_FAILURE_CATEGORY
-            ),
-            "consecutive_auth_failures": domain_data.get(
-                _AUTH_FAILURE_COUNT, 0
-            ),
-            "last_successful_update_at": _iso(
-                domain_data.get(_SIGNAL_LAST_SUCCESSFUL_UPDATE_AT)
-            ),
-            "last_successful_datapoint_at": _iso(
-                domain_data.get(_SIGNAL_LAST_SUCCESSFUL_DATAPOINT_AT)
-            ),
-            "cookie_age_seconds": cookie_age,
-        }
+        return _get_status_signals(domain_data)
 
     if not hass.services.has_service(DOMAIN, "get_status"):
         register_kwargs: dict[str, Any] = {}
