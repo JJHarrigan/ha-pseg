@@ -17,6 +17,7 @@
   - Standard: one-line state transitions and actionable failures only
   - Verbose: include probe/refresh decision breadcrumbs and transient retry notifications
 - Implements Phase 3.2 (improved diagnostics) and Phase 3.3 (configurable observability)
+- Add Home Assistant diagnostics hook with config-entry redaction and signal snapshot export
 
 ## 2.5.0.5
 

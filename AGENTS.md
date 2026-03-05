@@ -100,8 +100,11 @@ Scheduled (:00/:30):
 Use:
 
 ```bash
-python scripts/sync_version.py --set <MAJOR.MINOR.PATCH>
+python3 scripts/sync_version.py --set <MAJOR.MINOR.PATCH>
 ```
 
 This updates all required hard-coded version fields (`manifest.json`,
 addon config/build/runtime metadata, and repository metadata).
+
+For the full release checklist (changelog handling, tag, GitHub release notes),
+see [`docs/release-process.md`](docs/release-process.md).
