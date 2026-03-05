@@ -26,6 +26,7 @@ from custom_components.psegli.auto_login import (
     LoginResult,
     CATEGORY_ADDON_UNREACHABLE,
     CATEGORY_CAPTCHA_REQUIRED,
+    CATEGORY_UNKNOWN_ERROR,
 )
 from custom_components.psegli.const import (
     DOMAIN,
@@ -743,6 +744,31 @@ class TestSignalTracking:
             == CATEGORY_ADDON_UNREACHABLE
         )
         assert mock_hass.data[DOMAIN][_SIGNAL_LAST_REFRESH_REASON] == "manual_service"
+
+    @patch("custom_components.psegli.PSEGLIClient")
+    @patch("custom_components.psegli.get_fresh_cookies", new_callable=AsyncMock)
+    @patch("custom_components.psegli.check_addon_health", new_callable=AsyncMock)
+    async def test_refresh_exception_records_unknown_failure_signals(
+        self, mock_health, mock_fresh, mock_client_cls, mock_hass, mock_config_entry
+    ):
+        """Unexpected refresh exceptions record failed + unknown_runtime_error."""
+        mock_health.return_value = True
+        mock_fresh.side_effect = RuntimeError("addon exploded")
+        mock_client = MagicMock()
+        mock_client.test_connection = MagicMock(return_value=True)
+        mock_client.cookie = "MM_SID=valid_test_cookie"
+        mock_client_cls.return_value = mock_client
+        mock_hass.config_entries.async_entries.return_value = [mock_config_entry]
+
+        await async_setup_entry(mock_hass, mock_config_entry)
+        handler = _get_registered_service_handler(mock_hass, "refresh_cookie")
+        await handler(MagicMock(data={}))
+
+        assert mock_hass.data[DOMAIN][_SIGNAL_LAST_REFRESH_RESULT] == "failed"
+        assert (
+            mock_hass.data[DOMAIN][_SIGNAL_LAST_REFRESH_FAILURE_CATEGORY]
+            == CATEGORY_UNKNOWN_ERROR
+        )
 
     @patch("custom_components.psegli.PSEGLIClient")
     @patch("custom_components.psegli.get_fresh_cookies", new_callable=AsyncMock)

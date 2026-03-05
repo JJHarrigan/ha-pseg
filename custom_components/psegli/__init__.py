@@ -530,6 +530,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         try:
             return await task
         except Exception as err:
+            _record_signal(_SIGNAL_LAST_REFRESH_RESULT, "failed")
+            if not domain_data.get(_SIGNAL_LAST_REFRESH_FAILURE_CATEGORY):
+                _record_signal(
+                    _SIGNAL_LAST_REFRESH_FAILURE_CATEGORY,
+                    CATEGORY_UNKNOWN_ERROR,
+                )
             _LOGGER.error("Failed to refresh cookie (%s): %s", trigger_reason, err)
             if notify_on_failure:
                 await hass.services.async_call(
