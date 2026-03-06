@@ -5,7 +5,8 @@
       "description": "Enter your PSEG Long Island credentials. The integration will automatically log in and obtain authentication cookies.",
       "data": {
         "username": "Username/Email",
-        "password": "Password"
+        "password": "Password",
+        "addon_url": "Automation Add-on URL"
       }
     },
     "init": {
@@ -13,6 +14,7 @@
       "description": "Current cookie status: {current_cookie}",
       "data": {
         "cookie": "Authentication Cookie (leave empty for auto-refresh)",
+        "addon_url": "Automation Add-on URL",
         "diagnostic_level": "Diagnostic Level",
         "notification_level": "Notification Level"
       }

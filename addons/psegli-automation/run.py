@@ -6,6 +6,7 @@ authenticated cookies from mysmartenergy.psegliny.com.
 """
 
 import asyncio
+import json
 import logging
 import os
 from typing import Optional
@@ -19,7 +20,28 @@ from auto_login import CAPTCHA_REQUIRED_SENTINEL, get_fresh_cookies
 # Set HEADED=1 to run browser in headed mode (visible) for debugging
 HEADED = os.environ.get("HEADED", "").lower() in ("1", "true", "yes")
 
-logging.basicConfig(level=logging.INFO)
+
+def _load_debug_enabled() -> bool:
+    """Load debug toggle from env or addon options file."""
+    env_value = os.environ.get("ADDON_DEBUG")
+    if env_value is not None:
+        return env_value.strip().lower() in ("1", "true", "yes", "on")
+
+    options_path = "/data/options.json"
+    try:
+        with open(options_path, "r", encoding="utf-8") as f:
+            options = json.load(f)
+        return bool(options.get("debug", False))
+    except FileNotFoundError:
+        return False
+    except Exception:
+        # Avoid crashing startup due to malformed options.json.
+        return False
+
+
+DEBUG_ENABLED = _load_debug_enabled()
+LOG_LEVEL = logging.DEBUG if DEBUG_ENABLED else logging.INFO
+logging.basicConfig(level=LOG_LEVEL)
 logger = logging.getLogger(__name__)
 
 app = FastAPI(title="PSEG Long Island Automation", version="2.5.1")
@@ -29,6 +51,10 @@ _login_lock = asyncio.Lock()
 
 if HEADED:
     logger.info("HEADED mode enabled — browser will be visible")
+if DEBUG_ENABLED:
+    logger.info("Addon debug logging enabled")
+else:
+    logger.info("Addon debug logging disabled")
 
 
 class LoginRequest(BaseModel):
@@ -96,4 +122,10 @@ async def login_form(
 
 
 if __name__ == "__main__":
-    uvicorn.run(app, host="0.0.0.0", port=8000, workers=1)
+    uvicorn.run(
+        app,
+        host="0.0.0.0",
+        port=8000,
+        workers=1,
+        log_level="debug" if DEBUG_ENABLED else "info",
+    )

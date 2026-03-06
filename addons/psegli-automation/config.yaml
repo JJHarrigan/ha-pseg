@@ -21,3 +21,7 @@ panel_icon: mdi:lightning-bolt
 homeassistant_api: false
 homeassistant_api_filter:
   - "psegli"
+options:
+  debug: false
+schema:
+  debug: bool

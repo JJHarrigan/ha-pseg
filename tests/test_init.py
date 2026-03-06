@@ -748,6 +748,34 @@ class TestSignalTracking:
     @patch("custom_components.psegli.PSEGLIClient")
     @patch("custom_components.psegli.get_fresh_cookies", new_callable=AsyncMock)
     @patch("custom_components.psegli.check_addon_health", new_callable=AsyncMock)
+    async def test_refresh_uses_configured_addon_url(
+        self, mock_health, mock_fresh, mock_client_cls, mock_hass, mock_config_entry
+    ):
+        """Refresh uses configured addon URL for health + login calls."""
+        custom_url = "http://addon.example:8000"
+        mock_config_entry.options = {"addon_url": custom_url}
+        mock_health.return_value = True
+        mock_fresh.return_value = LoginResult(cookies="MM_SID=fresh_cookie")
+        mock_client = MagicMock()
+        mock_client.test_connection = MagicMock(return_value=True)
+        mock_client.cookie = "MM_SID=valid_test_cookie"
+        mock_client_cls.return_value = mock_client
+        mock_hass.config_entries.async_entries.return_value = [mock_config_entry]
+
+        await async_setup_entry(mock_hass, mock_config_entry)
+        handler = _get_registered_service_handler(mock_hass, "refresh_cookie")
+        await handler(MagicMock(data={}))
+
+        mock_health.assert_called_once_with(custom_url)
+        mock_fresh.assert_called_once_with(
+            mock_config_entry.data[CONF_USERNAME],
+            mock_config_entry.data[CONF_PASSWORD],
+            addon_url=custom_url,
+        )
+
+    @patch("custom_components.psegli.PSEGLIClient")
+    @patch("custom_components.psegli.get_fresh_cookies", new_callable=AsyncMock)
+    @patch("custom_components.psegli.check_addon_health", new_callable=AsyncMock)
     async def test_refresh_exception_records_unknown_failure_signals(
         self, mock_health, mock_fresh, mock_client_cls, mock_hass, mock_config_entry
     ):

@@ -15,6 +15,8 @@ from custom_components.psegli.const import (
     CONF_USERNAME,
     CONF_PASSWORD,
     CONF_COOKIE,
+    CONF_ADDON_URL,
+    DEFAULT_ADDON_URL,
     CONF_DIAGNOSTIC_LEVEL,
     CONF_NOTIFICATION_LEVEL,
     DIAGNOSTIC_STANDARD,
@@ -150,6 +152,12 @@ class TestPSEGLIConfigFlow:
 
         assert result["type"] == "create_entry"
         assert result["data"][CONF_COOKIE] == "MM_SID=addon_cookie"
+        assert result["data"][CONF_ADDON_URL] == DEFAULT_ADDON_URL
+        mock_fresh.assert_called_once_with(
+            "user@example.com",
+            "pass",
+            addon_url=DEFAULT_ADDON_URL,
+        )
 
     @patch("custom_components.psegli.config_flow.get_fresh_cookies", new_callable=AsyncMock)
     async def test_user_step_no_cookie_addon_fails_still_creates_entry(
@@ -254,6 +262,8 @@ class TestPSEGLIOptionsFlow:
         self, mock_client_cls, mock_fresh, mock_hass, mock_config_entry
     ):
         """Empty cookie in options triggers addon fetch."""
+        custom_url = "http://addon.example:8000"
+        mock_config_entry.options = {CONF_ADDON_URL: custom_url}
         mock_fresh.return_value = LoginResult(cookies="MM_SID=addon_refreshed")
         mock_client = MagicMock()
         mock_client.test_connection = MagicMock(return_value=True)
@@ -263,7 +273,11 @@ class TestPSEGLIOptionsFlow:
         result = await flow.async_step_init({CONF_COOKIE: ""})
 
         assert result["type"] == "create_entry"
-        mock_fresh.assert_called_once()
+        mock_fresh.assert_called_once_with(
+            mock_config_entry.data[CONF_USERNAME],
+            mock_config_entry.data[CONF_PASSWORD],
+            addon_url=custom_url,
+        )
 
     @patch("custom_components.psegli.config_flow.get_fresh_cookies", new_callable=AsyncMock)
     async def test_options_no_cookie_captcha_shows_error(
@@ -343,5 +357,14 @@ class TestPSEGLIOptionsFlow:
         # The form should have been shown with the schema
         schema = result["data_schema"]
         schema_keys = [str(k) for k in schema.schema]
+        assert CONF_ADDON_URL in schema_keys
         assert CONF_DIAGNOSTIC_LEVEL in schema_keys
         assert CONF_NOTIFICATION_LEVEL in schema_keys
+
+    async def test_options_schema_defaults_addon_url(self, mock_hass, mock_config_entry):
+        """Options schema defaults addon_url to the integration default."""
+        flow = _make_options_flow(mock_hass, mock_config_entry)
+        result = await flow.async_step_init(None)
+        schema = result["data_schema"]
+        key = next(k for k in schema.schema if str(k) == CONF_ADDON_URL)
+        assert key.default() == DEFAULT_ADDON_URL

@@ -31,12 +31,14 @@ from .const import (
     CONF_USERNAME,
     CONF_PASSWORD,
     CONF_COOKIE,
+    CONF_ADDON_URL,
     CONF_DIAGNOSTIC_LEVEL,
     CONF_NOTIFICATION_LEVEL,
     DIAGNOSTIC_STANDARD,
     DIAGNOSTIC_VERBOSE,
     NOTIFICATION_CRITICAL_ONLY,
     NOTIFICATION_VERBOSE,
+    DEFAULT_ADDON_URL,
 )
 from .psegli import InvalidAuth, PSEGLIClient, PSEGLIError
 from .auto_login import (
@@ -150,6 +152,18 @@ def _get_active_entry(hass: HomeAssistant) -> ConfigEntry | None:
     _LOGGER.warning("No loaded PSEG config entries found")
     return None
 
+
+def _get_addon_url(entry: ConfigEntry | None) -> str:
+    """Return configured addon URL (options first, then entry data, then default)."""
+    if entry:
+        options_url = entry.options.get(CONF_ADDON_URL)
+        if options_url:
+            return str(options_url).rstrip("/")
+        data_url = entry.data.get(CONF_ADDON_URL)
+        if data_url:
+            return str(data_url).rstrip("/")
+    return DEFAULT_ADDON_URL.rstrip("/")
+
 async def get_last_cumulative_kwh(hass: HomeAssistant, statistic_id: str) -> float:
     """Get the last recorded cumulative kWh for a given statistic_id.
 
@@ -184,6 +198,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     username = entry.data.get(CONF_USERNAME)
     password = entry.data.get(CONF_PASSWORD)
     cookie = entry.data.get(CONF_COOKIE, "")
+    addon_url = _get_addon_url(entry)
 
     if not username or not password:
         _LOGGER.error("No username/password provided")
@@ -191,9 +206,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # If no cookie available, try to get one from the addon
     if not cookie:
-        _LOGGER.debug("No cookie available, attempting to get fresh cookies from addon...")
+        _LOGGER.info(
+            "No cookie available, attempting addon login via %s",
+            addon_url,
+        )
         try:
-            login_result = await get_fresh_cookies(username, password)
+            login_result = await get_fresh_cookies(
+                username,
+                password,
+                addon_url=addon_url,
+            )
 
             if login_result.cookies:
                 cookie = login_result.cookies
@@ -218,11 +240,16 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 )
             else:
                 _LOGGER.warning(
-                    "Addon failed to get cookies (category: %s)",
+                    "Addon failed to get cookies (category: %s, url: %s)",
                     login_result.category,
+                    addon_url,
                 )
         except Exception as e:
-            _LOGGER.warning("Failed to get cookies from addon: %s", e)
+            _LOGGER.warning(
+                "Failed to get cookies from addon url=%s: %s",
+                addon_url,
+                e,
+            )
 
     if not cookie:
         _LOGGER.warning(
@@ -365,6 +392,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         username = active_entry.data.get(CONF_USERNAME)
         password = active_entry.data.get(CONF_PASSWORD)
+        addon_url = _get_addon_url(active_entry)
+        _LOGGER.info(
+            "[refresh:%s] Using addon URL: %s",
+            attempt_id,
+            addon_url,
+        )
         if not username or not password:
             _LOGGER.error(
                 "[refresh:%s] No credentials available (%s)",
@@ -374,10 +407,12 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _record_signal(_SIGNAL_LAST_REFRESH_FAILURE_CATEGORY, None)
             return False
 
-        if not await check_addon_health():
+        if not await check_addon_health(addon_url):
             _LOGGER.warning(
-                "[refresh:%s] Addon not available or unhealthy (%s)",
-                attempt_id, trigger_reason,
+                "[refresh:%s] Addon not available or unhealthy (%s, url=%s)",
+                attempt_id,
+                trigger_reason,
+                addon_url,
             )
             _record_signal(_SIGNAL_LAST_REFRESH_RESULT, "failed")
             _record_signal(
@@ -386,11 +421,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
             return False
 
-        login_result = await get_fresh_cookies(username, password)
+        login_result = await get_fresh_cookies(
+            username,
+            password,
+            addon_url=addon_url,
+        )
         if login_result.category == CATEGORY_CAPTCHA_REQUIRED:
             _LOGGER.warning(
-                "[refresh:%s] reCAPTCHA challenge triggered (%s)",
-                attempt_id, trigger_reason,
+                "[refresh:%s] reCAPTCHA challenge triggered (%s, url=%s)",
+                attempt_id,
+                trigger_reason,
+                addon_url,
             )
             _record_signal(_SIGNAL_LAST_REFRESH_RESULT, "failed")
             _record_signal(
@@ -413,8 +454,11 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         if not login_result.cookies:
             _LOGGER.warning(
-                "[refresh:%s] Addon failed to provide fresh cookies (%s, category: %s)",
-                attempt_id, trigger_reason, login_result.category,
+                "[refresh:%s] Addon failed to provide fresh cookies (%s, category: %s, url=%s)",
+                attempt_id,
+                trigger_reason,
+                login_result.category,
+                addon_url,
             )
             _record_signal(_SIGNAL_LAST_REFRESH_RESULT, "failed")
             _record_signal(

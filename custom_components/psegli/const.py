@@ -6,6 +6,7 @@ DOMAIN = "psegli"
 CONF_COOKIE = "cookie"
 CONF_USERNAME = "username"
 CONF_PASSWORD = "password"
+CONF_ADDON_URL = "addon_url"
 
 # Observability options (Phase 3.3)
 CONF_DIAGNOSTIC_LEVEL = "diagnostic_level"

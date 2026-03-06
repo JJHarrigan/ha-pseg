@@ -104,6 +104,13 @@ reCAPTCHA challenges usually stop appearing after a few successful logins with t
 - **Network Issues**: Verify addon can reach PSEG website
 - **reCAPTCHA**: If login fails with `captcha_required`, retry — the persistent profile builds trust over time
 
+### Debug Logging Toggle
+
+Addon options include a `debug` boolean:
+
+- `debug: false` (default) keeps normal log volume.
+- `debug: true` enables verbose add-on logging for troubleshooting.
+
 ## Development
 
 To build locally:
