@@ -230,6 +230,42 @@ class TestPSEGAutoLogin:
         await login.cleanup()
 
     @pytest.mark.asyncio
+    async def test_captcha_required_when_no_login_api_response_but_recaptcha_iframe(
+        self, mock_playwright
+    ):
+        """No captured login API response + visible reCAPTCHA iframe should be treated as CAPTCHA_REQUIRED."""
+        pw, context, page = mock_playwright
+
+        remember_me_mock = AsyncMock()
+        remember_me_mock.is_checked = AsyncMock(return_value=False)
+
+        async def query_selector_side_effect(selector):
+            if selector == "#LoginEmail":
+                return MagicMock()
+            if selector == "#RememberMe":
+                return remember_me_mock
+            if 'iframe[src*="recaptcha"], iframe[title*="reCAPTCHA"]' == selector:
+                return MagicMock()
+            return None
+
+        page.query_selector = AsyncMock(side_effect=query_selector_side_effect)
+
+        login = _make_login_instance()
+
+        with patch("auto_login.async_playwright") as mock_ap:
+            mock_ap.return_value.start = AsyncMock(return_value=pw)
+            with patch("auto_login.Stealth") as mock_stealth:
+                mock_stealth.return_value.apply_stealth_async = AsyncMock()
+                with patch.object(login, "_log_login_failure_context", new=AsyncMock()):
+                    with patch("auto_login.asyncio.sleep", new=AsyncMock(return_value=None)):
+                        assert await login.setup_browser()
+                        result, cookies = await login.login()
+
+        assert result == LoginResult.CAPTCHA_REQUIRED
+        assert cookies is None
+        await login.cleanup()
+
+    @pytest.mark.asyncio
     async def test_cleanup_idempotent(self, mock_playwright):
         """Call cleanup() twice, no exception."""
         pw, context, page = mock_playwright

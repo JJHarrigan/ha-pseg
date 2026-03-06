@@ -313,6 +313,22 @@ class PSEGAutoLogin:
             # Check if we're on the authenticated dashboard
             login_form_still = await self.page.query_selector("#LoginEmail")
             if login_form_still:
+                # If submit never produced a login API response and reCAPTCHA is present,
+                # classify as CAPTCHA_REQUIRED rather than invalid credentials.
+                if not login_response:
+                    try:
+                        recaptcha = await self.page.query_selector(
+                            'iframe[src*="recaptcha"], iframe[title*="reCAPTCHA"]'
+                        )
+                    except Exception:
+                        recaptcha = None
+                    if recaptcha is not None:
+                        _LOGGER.warning(
+                            "CAPTCHA challenge likely pending (no login API response, recaptcha iframe present)"
+                        )
+                        await self._log_login_failure_context(login_response)
+                        record_captcha()
+                        return LoginResult.CAPTCHA_REQUIRED, None
                 await self._log_login_failure_context(login_response)
                 record_profile_failed()
                 return LoginResult.FAILED, None
