@@ -349,6 +349,21 @@ To reduce ambiguity when coding, use these concrete contracts:
 
 ---
 
+## Execution Status (as of 2026-03-06)
+
+| Phase | Status | Notes |
+|---|---|---|
+| Phase A | ✅ Complete | Supervisor discovery + canonicalization landed and hardened. |
+| Phase B | ✅ Complete | Circuit breaker, cooldown notifications, URL-aware reset behavior landed. |
+| Phase C | ✅ Complete | CAPTCHA auto-retry + first-start grace implemented; retry count/delays now configurable via options. |
+| Phase D | ✅ Complete | Add-on profile health, warm-up flow, and `/profile-status` landed with tests. |
+| Phase E | ✅ Complete | Proactive refresh + expiry warning landed; warning threshold now configurable via options. |
+| Phase F | ✅ Complete | Incremental/bounded backfill window computed from `last_successful_datapoint_at` and wired into scheduled + post-refresh updates. |
+| Phase G | ✅ Complete | Guided preflight/readiness UX in config flow landed. |
+| Phase H | 💤 Deferred | Explicitly deferred RFC (profile backup/restore). |
+
+---
+
 ## Changelog for This Plan Revision
 
 - Integrated Claude’s recommendations into Cursor’s phase model.
@@ -356,3 +371,6 @@ To reduce ambiguity when coding, use these concrete contracts:
 - Added decision table (adopt/modify/defer) and explicit deferred RFC boundary.
 - **d967dd7:** Added initial implementation defaults (v1), Phase A cache scope clarification (in-cycle vs persistent learning), parallel execution waves and constraints, and executor-facing implementation contracts.
 - **Phases D + G implemented (Cursor):** Add-on profile health + rotate on corruption, `/profile-status` endpoint and warm-up, integration profile-status fetch and warmup_state logging; config flow preflight (add-on readiness + remediation message). Tests: profile-status contract, rotation on launch failure, get_addon_profile_status, preflight ready/unreachable.
+- **3bf6440 / 7963c6e / e5ab68d / 529f3c1:** Phases A + B implemented and hardened (Supervisor discovery/session handling, URL precedence/learning, circuit behavior, notification semantics, reliability fixes).
+- **74f3a3b / 09e2440 / bdb25e9 / d86bd06 / 761785f / 02978fa / a954d15:** Phases C + E implemented and completed (CAPTCHA retries, first-start grace, proactive refresh/expiry warnings, lifecycle fixes, options configurability).
+- **a954d15:** Phase F implemented (incremental/bounded backfill driven by datapoint gap).

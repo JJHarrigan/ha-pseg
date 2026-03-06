@@ -2,6 +2,28 @@
 
 ## Unreleased
 
+## 2.5.1.2
+
+- Complete Phase C/E/F robustness work:
+  - Configurable CAPTCHA auto-retry policy in integration options:
+    - `captcha_auto_retry_count` (0 disables)
+    - `captcha_auto_retry_delays_minutes` (comma-separated delays)
+  - Configurable cookie-expiry warning threshold:
+    - `expiry_warning_threshold_percent` (0 disables warnings)
+  - Incremental/bounded backfill window based on `last_successful_datapoint_at` gap:
+    - Trigger at 24h gap
+    - Cap at 30 days
+    - Applied to scheduled updates and post-refresh statistics updates
+- Harden CAPTCHA retry lifecycle:
+  - Prevent retry-loop self-rescheduling
+  - Cancel pending CAPTCHA retry task on successful refresh
+- Fix proactive refresh fallback path:
+  - If proactive refresh fails, continue normal auth probe/update flow instead of exiting early
+- Preserve existing options when fields are omitted in options flow:
+  - Keep existing `proactive_refresh_max_age_hours` value when not resubmitted
+- Improve add-on profile state accuracy:
+  - Do not record profile creation when profile directory does not exist
+
 ## 2.5.1.1
 
 - Add add-on debug logging toggle in Home Assistant add-on Configuration UI (`debug: bool`), with runtime log-level control in the add-on process
