@@ -29,4 +29,5 @@ DEFAULT_PROACTIVE_REFRESH_MAX_AGE_HOURS = 20
 EXPIRY_WARNING_THRESHOLD_PERCENT = 80
 
 # Addon configuration
+ADDON_SLUG = "psegli-automation"
 DEFAULT_ADDON_URL = "http://localhost:8000"

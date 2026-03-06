@@ -48,9 +48,11 @@ from .const import (
     EXPIRY_WARNING_THRESHOLD_PERCENT,
 )
 from .psegli import InvalidAuth, PSEGLIClient, PSEGLIError
+from .supervisor import async_get_addon_url_from_supervisor
 from .auto_login import (
     get_fresh_cookies,
     check_addon_health,
+    get_addon_profile_status,
     CAPTCHA_REQUIRED,
     LoginResult,
     CATEGORY_CAPTCHA_REQUIRED,
@@ -73,6 +75,23 @@ _LAST_EXPIRY_WARNING_AT = "_last_expiry_warning_at"
 _AUTH_FAILURE_THRESHOLD = 3
 _AUTH_FAILURE_REFRESH_DELAY_SECONDS = 10
 _AUTH_FAILURE_NOTIFICATION_COOLDOWN = timedelta(hours=24)
+
+# Supervisor discovery cache
+_SUPERVISOR_DISCOVERED_ADDON_URL = "_supervisor_discovered_addon_url"
+_SUPERVISOR_DISCOVERED_ADDON_URL_AT = "_supervisor_discovered_addon_url_at"
+_SUPERVISOR_DISCOVERY_TTL = timedelta(seconds=60)
+_OPTION_ADDON_URL_AUTO = "_addon_url_auto"
+
+# Add-on transport circuit breaker state
+_ADDON_TRANSPORT_FAILURE_COUNT = "_addon_transport_failure_count"
+_ADDON_CIRCUIT_OPEN_UNTIL = "_addon_circuit_open_until"
+_ADDON_CIRCUIT_OPEN_FOR_URL = "_addon_circuit_open_for_url"
+_ADDON_LAST_FAILURE_URL = "_addon_last_failure_url"
+_LAST_ADDON_UNREACHABLE_NOTIFICATION_AT = "_last_addon_unreachable_notification_at"
+_LAST_WORKING_ADDON_URL = "_last_working_addon_url"
+_ADDON_CIRCUIT_OPEN_THRESHOLD = 3
+_ADDON_CIRCUIT_OPEN_DURATION = timedelta(minutes=10)
+_ADDON_UNREACHABLE_NOTIFICATION_COOLDOWN = timedelta(hours=24)
 
 # Signal tracking keys (Phase 3.3)
 _SIGNAL_LAST_AUTH_PROBE_AT = "_last_auth_probe_at"
@@ -151,6 +170,12 @@ def _get_status_signals(domain_data: dict[str, Any]) -> dict[str, Any]:
         "cookie_age_seconds": cookie_age,
         "captcha_retry_pending": _is_task_pending(domain_data.get(_CAPTCHA_RETRY_TASK)),
         "last_expiry_warning_at": _iso(domain_data.get(_LAST_EXPIRY_WARNING_AT)),
+        "addon_transport_failure_count": domain_data.get(
+            _ADDON_TRANSPORT_FAILURE_COUNT,
+            0,
+        ),
+        "addon_circuit_open_until": _iso(domain_data.get(_ADDON_CIRCUIT_OPEN_UNTIL)),
+        "last_working_addon_url": domain_data.get(_LAST_WORKING_ADDON_URL),
     }
 
 
@@ -169,7 +194,7 @@ def _get_active_entry(hass: HomeAssistant) -> ConfigEntry | None:
     return None
 
 
-def _get_addon_url(entry: ConfigEntry | None) -> str:
+def _get_configured_addon_url(entry: ConfigEntry | None) -> str:
     """Return configured addon URL (options first, then entry data, then default)."""
     if entry:
         options_url = entry.options.get(CONF_ADDON_URL)
@@ -181,6 +206,41 @@ def _get_addon_url(entry: ConfigEntry | None) -> str:
     return DEFAULT_ADDON_URL.rstrip("/")
 
 
+def _is_auto_managed_addon_url(entry: ConfigEntry | None) -> bool:
+    """Return True when addon_url option is integration-managed discovery output."""
+    return bool(entry and entry.options.get(_OPTION_ADDON_URL_AUTO))
+
+
+async def _get_cached_supervisor_addon_url(hass: HomeAssistant) -> str | None:
+    """Return Supervisor-discovered add-on URL from TTL cache."""
+    domain_data = hass.data.setdefault(DOMAIN, {})
+    now = datetime.now(tz=timezone.utc)
+    cached_at = domain_data.get(_SUPERVISOR_DISCOVERED_ADDON_URL_AT)
+    if (
+        cached_at
+        and isinstance(cached_at, datetime)
+        and now - cached_at < _SUPERVISOR_DISCOVERY_TTL
+    ):
+        return domain_data.get(_SUPERVISOR_DISCOVERED_ADDON_URL)
+
+    discovered = await async_get_addon_url_from_supervisor(hass)
+    normalized = discovered.rstrip("/") if discovered else None
+    domain_data[_SUPERVISOR_DISCOVERED_ADDON_URL] = normalized
+    domain_data[_SUPERVISOR_DISCOVERED_ADDON_URL_AT] = now
+    return normalized
+
+
+async def _get_addon_url(hass: HomeAssistant, entry: ConfigEntry | None) -> str:
+    """Resolve effective addon URL with Supervisor discovery fallback."""
+    configured = _get_configured_addon_url(entry)
+    default = DEFAULT_ADDON_URL.rstrip("/")
+    if configured != default and not _is_auto_managed_addon_url(entry):
+        return configured
+
+    discovered = await _get_cached_supervisor_addon_url(hass)
+    return discovered or configured
+
+
 def _persist_discovered_addon_url(
     hass: HomeAssistant,
     entry: ConfigEntry | None,
@@ -188,15 +248,36 @@ def _persist_discovered_addon_url(
     context: str,
 ) -> None:
     """Persist reachable addon URL in options when it differs from current setting."""
-    if not entry or not discovered_url:
+    if not discovered_url:
         return
 
+    domain_data = hass.data.setdefault(DOMAIN, {})
     normalized = str(discovered_url).rstrip("/")
-    current = _get_addon_url(entry)
+    domain_data[_LAST_WORKING_ADDON_URL] = normalized
+    if not entry:
+        return
+
+    current = _get_configured_addon_url(entry)
     if normalized == current:
         return
 
-    updated_options = {**entry.options, CONF_ADDON_URL: normalized}
+    default = DEFAULT_ADDON_URL.rstrip("/")
+    auto_managed = _is_auto_managed_addon_url(entry)
+    # Do not overwrite explicit custom URLs that are non-default.
+    if current != default and not auto_managed:
+        _LOGGER.debug(
+            "Keeping user-configured addon URL %s; discovered %s during %s",
+            current,
+            normalized,
+            context,
+        )
+        return
+
+    updated_options = {
+        **entry.options,
+        CONF_ADDON_URL: normalized,
+        _OPTION_ADDON_URL_AUTO: True,
+    }
     hass.config_entries.async_update_entry(entry, options=updated_options)
     _LOGGER.info(
         "Updated addon URL from %s to %s based on successful %s probe",
@@ -235,19 +316,19 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     hass.data.setdefault(DOMAIN, {})
     domain_data = hass.data[DOMAIN]
     domain_data.setdefault(_AUTH_FAILURE_COUNT, 0)
+    domain_data.setdefault(_ADDON_TRANSPORT_FAILURE_COUNT, 0)
 
     # Get credentials from config entry
     username = entry.data.get(CONF_USERNAME)
     password = entry.data.get(CONF_PASSWORD)
     cookie = entry.data.get(CONF_COOKIE, "")
-    addon_url = _get_addon_url(entry)
-
     if not username or not password:
         _LOGGER.error("No username/password provided")
         return False
 
     # If no cookie available, try to get one from the addon
     if not cookie:
+        addon_url = await _get_addon_url(hass, entry)
         _LOGGER.info(
             "No cookie available, attempting addon login via %s",
             addon_url,
@@ -433,6 +514,145 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
         """Store a signal value in domain_data."""
         domain_data[key] = value
 
+    def _reset_addon_transport_state(reason: str) -> None:
+        """Reset add-on transport failure count and circuit state."""
+        failures = domain_data.get(_ADDON_TRANSPORT_FAILURE_COUNT, 0)
+        open_until = domain_data.get(_ADDON_CIRCUIT_OPEN_UNTIL)
+        open_for_url = domain_data.get(_ADDON_CIRCUIT_OPEN_FOR_URL)
+        if failures or open_until:
+            _LOGGER.info(
+                "Reset add-on transport state (%s): failures=%d open_until=%s open_for_url=%s",
+                reason,
+                failures,
+                open_until.isoformat() if isinstance(open_until, datetime) else open_until,
+                open_for_url,
+            )
+        domain_data[_ADDON_TRANSPORT_FAILURE_COUNT] = 0
+        domain_data.pop(_ADDON_CIRCUIT_OPEN_UNTIL, None)
+        domain_data.pop(_ADDON_CIRCUIT_OPEN_FOR_URL, None)
+        domain_data.pop(_ADDON_LAST_FAILURE_URL, None)
+        # Allow fresh notification cycle after successful recovery/URL switch.
+        domain_data.pop(_LAST_ADDON_UNREACHABLE_NOTIFICATION_AT, None)
+
+    async def _maybe_notify_addon_unreachable(
+        addon_url: str,
+        trigger_reason: str,
+    ) -> None:
+        """Emit rate-limited notification for repeated add-on unreachability."""
+        failures = domain_data.get(_ADDON_TRANSPORT_FAILURE_COUNT, 0)
+        if failures < _ADDON_CIRCUIT_OPEN_THRESHOLD:
+            return
+
+        now = datetime.now(tz=timezone.utc)
+        last_notified = domain_data.get(_LAST_ADDON_UNREACHABLE_NOTIFICATION_AT)
+        if (
+            isinstance(last_notified, datetime)
+            and now - last_notified < _ADDON_UNREACHABLE_NOTIFICATION_COOLDOWN
+        ):
+            return
+
+        open_until = domain_data.get(_ADDON_CIRCUIT_OPEN_UNTIL)
+        next_probe = (
+            open_until.isoformat() if isinstance(open_until, datetime) else "immediate"
+        )
+        last_working = domain_data.get(_LAST_WORKING_ADDON_URL)
+        await hass.services.async_call(
+            "persistent_notification",
+            "create",
+            {
+                "title": "PSEG Integration: Add-on Unreachable",
+                "message": (
+                    "PSEG add-on connectivity is failing repeatedly.\n\n"
+                    f"Trigger: {trigger_reason}\n"
+                    f"Active URL: {addon_url}\n"
+                    f"Last known working URL: {last_working or 'unknown'}\n"
+                    f"Transport failures: {failures}\n"
+                    f"Next probe: {next_probe}"
+                ),
+                "notification_id": "psegli_addon_unreachable",
+            },
+        )
+        domain_data[_LAST_ADDON_UNREACHABLE_NOTIFICATION_AT] = now
+
+    async def _record_addon_transport_failure(
+        category: str | None,
+        addon_url: str,
+        trigger_reason: str,
+    ) -> int:
+        """Increment transport failure count and open circuit at threshold."""
+        last_failure_url = domain_data.get(_ADDON_LAST_FAILURE_URL)
+        if isinstance(last_failure_url, str) and last_failure_url and last_failure_url != addon_url:
+            _LOGGER.info(
+                "Addon failure URL changed: %s -> %s (%s); resetting transport state",
+                last_failure_url,
+                addon_url,
+                trigger_reason,
+            )
+            _reset_addon_transport_state("addon failure URL changed")
+
+        count = domain_data.get(_ADDON_TRANSPORT_FAILURE_COUNT, 0) + 1
+        domain_data[_ADDON_TRANSPORT_FAILURE_COUNT] = count
+        domain_data[_ADDON_LAST_FAILURE_URL] = addon_url
+
+        _LOGGER.warning(
+            "Addon transport failure recorded (%s, category=%s): %d consecutive failures (url=%s)",
+            trigger_reason,
+            category,
+            count,
+            addon_url,
+        )
+
+        if count >= _ADDON_CIRCUIT_OPEN_THRESHOLD:
+            proposed_open_until = datetime.now(tz=timezone.utc) + _ADDON_CIRCUIT_OPEN_DURATION
+            existing_open_until = domain_data.get(_ADDON_CIRCUIT_OPEN_UNTIL)
+            if not isinstance(existing_open_until, datetime) or existing_open_until < proposed_open_until:
+                domain_data[_ADDON_CIRCUIT_OPEN_UNTIL] = proposed_open_until
+            domain_data[_ADDON_CIRCUIT_OPEN_FOR_URL] = addon_url
+            _LOGGER.warning(
+                "Addon circuit opened after %d failures; suppressing probes until %s (url=%s)",
+                count,
+                domain_data[_ADDON_CIRCUIT_OPEN_UNTIL].isoformat(),
+                addon_url,
+            )
+
+        await _maybe_notify_addon_unreachable(addon_url, trigger_reason)
+        return count
+
+    def _is_addon_circuit_open(trigger_reason: str, addon_url: str) -> bool:
+        """Return True when add-on transport circuit is open and still cooling down."""
+        open_until = domain_data.get(_ADDON_CIRCUIT_OPEN_UNTIL)
+        if not isinstance(open_until, datetime):
+            return False
+
+        open_for_url = domain_data.get(_ADDON_CIRCUIT_OPEN_FOR_URL)
+        if isinstance(open_for_url, str) and open_for_url and open_for_url != addon_url:
+            _LOGGER.info(
+                "Addon circuit reset due to URL change: was %s now %s (%s)",
+                open_for_url,
+                addon_url,
+                trigger_reason,
+            )
+            _reset_addon_transport_state("addon URL changed")
+            return False
+
+        now = datetime.now(tz=timezone.utc)
+        if now >= open_until:
+            _LOGGER.info(
+                "Addon circuit moving to half-open; retrying transport probe (%s, url=%s)",
+                trigger_reason,
+                addon_url,
+            )
+            domain_data.pop(_ADDON_CIRCUIT_OPEN_UNTIL, None)
+            return False
+
+        _LOGGER.warning(
+            "Addon circuit open until %s; skipping transport probe (%s, url=%s)",
+            open_until.isoformat(),
+            trigger_reason,
+            addon_url,
+        )
+        return True
+
     async def _refresh_cookie_once(
         trigger_reason: str,
         notify_on_success: bool,
@@ -457,7 +677,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
         username = active_entry.data.get(CONF_USERNAME)
         password = active_entry.data.get(CONF_PASSWORD)
-        addon_url = _get_addon_url(active_entry)
+        addon_url = await _get_addon_url(hass, active_entry)
         _LOGGER.info(
             "[refresh:%s] Using addon URL: %s",
             attempt_id,
@@ -472,6 +692,15 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _record_signal(_SIGNAL_LAST_REFRESH_FAILURE_CATEGORY, None)
             return False
 
+        if _is_addon_circuit_open(trigger_reason, addon_url):
+            _record_signal(_SIGNAL_LAST_REFRESH_RESULT, "failed")
+            _record_signal(
+                _SIGNAL_LAST_REFRESH_FAILURE_CATEGORY,
+                CATEGORY_ADDON_UNREACHABLE,
+            )
+            await _maybe_notify_addon_unreachable(addon_url, trigger_reason)
+            return False
+
         if not await check_addon_health(addon_url):
             _LOGGER.warning(
                 "[refresh:%s] Addon not available or unhealthy (%s, url=%s)",
@@ -479,12 +708,26 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 trigger_reason,
                 addon_url,
             )
+            await _record_addon_transport_failure(
+                CATEGORY_ADDON_UNREACHABLE,
+                addon_url,
+                trigger_reason,
+            )
             _record_signal(_SIGNAL_LAST_REFRESH_RESULT, "failed")
             _record_signal(
                 _SIGNAL_LAST_REFRESH_FAILURE_CATEGORY,
                 CATEGORY_ADDON_UNREACHABLE,
             )
             return False
+
+        # Phase D: best-effort profile-status for warmup_state visibility
+        profile_status = await get_addon_profile_status(addon_url)
+        if profile_status and profile_status.get("warmup_state") != "ready":
+            _LOGGER.info(
+                "[refresh:%s] Addon profile warmup_state=%s (profile may still be building trust)",
+                attempt_id,
+                profile_status.get("warmup_state", "unknown"),
+            )
 
         login_result = await get_fresh_cookies(
             username,
@@ -498,6 +741,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             f"refresh ({trigger_reason})",
         )
         if login_result.category == CATEGORY_CAPTCHA_REQUIRED:
+            _reset_addon_transport_state("captcha response")
             _LOGGER.warning(
                 "[refresh:%s] reCAPTCHA challenge triggered (%s, url=%s)",
                 attempt_id,
@@ -532,6 +776,17 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 login_result.category,
                 addon_url,
             )
+            if login_result.category in (
+                CATEGORY_ADDON_UNREACHABLE,
+                CATEGORY_ADDON_DISCONNECT,
+            ):
+                await _record_addon_transport_failure(
+                    login_result.category,
+                    addon_url,
+                    trigger_reason,
+                )
+            else:
+                _reset_addon_transport_state("non-transport addon response")
             _record_signal(_SIGNAL_LAST_REFRESH_RESULT, "failed")
             _record_signal(
                 _SIGNAL_LAST_REFRESH_FAILURE_CATEGORY,
@@ -579,6 +834,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             data={**active_entry.data, CONF_COOKIE: cookies},
         )
 
+        _reset_addon_transport_state("cookie refresh success")
         _record_cookie_obtained(hass)
         _reset_auth_failure_counter("cookie refresh success")
         _record_signal(_SIGNAL_LAST_REFRESH_RESULT, "success")
@@ -1287,6 +1543,16 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 except Exception as e:
                     _LOGGER.warning("Error cancelling in-flight refresh task: %s", e)
                 domain_data.pop(_REFRESH_IN_PROGRESS_TASK, None)
+
+            # Clear addon connectivity state for a clean next setup.
+            domain_data.pop(_SUPERVISOR_DISCOVERED_ADDON_URL, None)
+            domain_data.pop(_SUPERVISOR_DISCOVERED_ADDON_URL_AT, None)
+            domain_data.pop(_ADDON_TRANSPORT_FAILURE_COUNT, None)
+            domain_data.pop(_ADDON_CIRCUIT_OPEN_UNTIL, None)
+            domain_data.pop(_ADDON_CIRCUIT_OPEN_FOR_URL, None)
+            domain_data.pop(_ADDON_LAST_FAILURE_URL, None)
+            domain_data.pop(_LAST_ADDON_UNREACHABLE_NOTIFICATION_AT, None)
+            domain_data.pop(_LAST_WORKING_ADDON_URL, None)
 
     # Only remove services when the last entry is being unloaded
     if not remaining_loaded_entries:

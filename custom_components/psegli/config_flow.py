@@ -1,4 +1,5 @@
 """Config flow for PSEG Long Island integration."""
+import asyncio
 import logging
 import voluptuous as vol
 
@@ -24,14 +25,44 @@ from .const import (
 )
 from .psegli import PSEGLIClient, PSEGLIError
 from .exceptions import InvalidAuth
-from .auto_login import get_fresh_cookies, CAPTCHA_REQUIRED, CATEGORY_CAPTCHA_REQUIRED
+from .auto_login import (
+    get_fresh_cookies,
+    check_addon_health,
+    CAPTCHA_REQUIRED,
+    CATEGORY_CAPTCHA_REQUIRED,
+)
 
 _LOGGER = logging.getLogger(__name__)
+_OPTION_ADDON_URL_AUTO = "_addon_url_auto"
 
 
 def _normalize_addon_url(value: str | None) -> str:
     """Normalize addon URL with default fallback and no trailing slash."""
     return (value or DEFAULT_ADDON_URL).rstrip("/")
+
+
+async def _run_preflight(hass: HomeAssistant, addon_url: str) -> dict[str, str]:
+    """Phase G: Check add-on readiness. Returns status and message for UX.
+
+    Does not block setup; allows continuation with clear status.
+    """
+    try:
+        healthy = await asyncio.wait_for(check_addon_health(addon_url), timeout=2)
+        if healthy:
+            return {
+                "preflight_status": "ready",
+                "preflight_message": "Add-on is reachable. You can enter credentials below.",
+            }
+    except Exception:  # pylint: disable=broad-except
+        pass
+    return {
+        "preflight_status": "unreachable",
+        "preflight_message": (
+            "Add-on is not reachable at the default URL. "
+            "Install and start the PSEG Long Island Automation add-on from the Add-on Store, "
+            "or enter the add-on URL in the field below (e.g. from the add-on Info tab)."
+        ),
+    }
 
 
 class PSEGLIConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
@@ -78,10 +109,12 @@ class PSEGLIConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
 
                         if login_result.category == CATEGORY_CAPTCHA_REQUIRED:
                             errors["base"] = "captcha_required"
+                            preflight = await _run_preflight(self.hass, addon_url)
                             return self.async_show_form(
                                 step_id="user",
                                 data_schema=self._get_schema(),
                                 errors=errors,
+                                description_placeholders=preflight,
                             )
                         elif login_result.cookies:
                             cookie = login_result.cookies
@@ -132,10 +165,16 @@ class PSEGLIConfigFlow(config_entries.ConfigFlow, domain=DOMAIN):
                 _LOGGER.exception("Unexpected exception during setup")
                 errors["base"] = "unknown"
 
+        preflight_url = _normalize_addon_url(
+            (user_input or {}).get(CONF_ADDON_URL, DEFAULT_ADDON_URL)
+        )
+        # Phase G: run preflight and show status so user sees readiness before submitting
+        preflight = await _run_preflight(self.hass, preflight_url)
         return self.async_show_form(
             step_id="user",
             data_schema=self._get_schema(),
             errors=errors,
+            description_placeholders=preflight,
         )
 
     def _get_schema(self):
@@ -168,12 +207,19 @@ class PSEGLIOptionsFlow(config_entries.OptionsFlow):
                         self.config_entry.data.get(CONF_ADDON_URL),
                     )
                 )
+                current_auto_managed = bool(
+                    self.config_entry.options.get(_OPTION_ADDON_URL_AUTO)
+                )
                 addon_url = _normalize_addon_url(
                     user_input.get(CONF_ADDON_URL, current_addon_url)
+                )
+                manual_url_override = (
+                    CONF_ADDON_URL in user_input and addon_url != current_addon_url
                 )
 
                 # Always persist observability options
                 options_data = {
+                    **self.config_entry.options,
                     CONF_ADDON_URL: addon_url,
                     CONF_DIAGNOSTIC_LEVEL: user_input.get(
                         CONF_DIAGNOSTIC_LEVEL, DIAGNOSTIC_STANDARD
@@ -186,6 +232,10 @@ class PSEGLIOptionsFlow(config_entries.OptionsFlow):
                         DEFAULT_PROACTIVE_REFRESH_MAX_AGE_HOURS,
                     ),
                 }
+                if manual_url_override:
+                    options_data.pop(_OPTION_ADDON_URL_AUTO, None)
+                elif current_auto_managed:
+                    options_data[_OPTION_ADDON_URL_AUTO] = True
 
                 # If user provided a new cookie, validate it
                 if new_cookie:
@@ -226,6 +276,7 @@ class PSEGLIOptionsFlow(config_entries.OptionsFlow):
                                     addon_url,
                                     discovered_url,
                                 )
+                                options_data[_OPTION_ADDON_URL_AUTO] = True
                             addon_url = discovered_url
                             options_data[CONF_ADDON_URL] = addon_url
 

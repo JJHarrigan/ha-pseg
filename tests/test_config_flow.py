@@ -121,10 +121,12 @@ class TestPSEGLIConfigFlow:
         assert result["type"] == "form"
         assert result["errors"]["base"] == "cannot_connect"
 
+    @patch("custom_components.psegli.config_flow.check_addon_health", new_callable=AsyncMock)
     @patch("custom_components.psegli.config_flow.get_fresh_cookies", new_callable=AsyncMock)
-    async def test_user_step_captcha_shows_error(self, mock_fresh, mock_hass):
+    async def test_user_step_captcha_shows_error(self, mock_fresh, mock_health, mock_hass):
         """CAPTCHA from addon shows captcha_required error."""
         mock_fresh.return_value = LoginResult(category=CATEGORY_CAPTCHA_REQUIRED)
+        mock_health.return_value = True
 
         flow = _make_config_flow(mock_hass)
         result = await flow.async_step_user({
@@ -134,6 +136,7 @@ class TestPSEGLIConfigFlow:
 
         assert result["type"] == "form"
         assert result["errors"]["base"] == "captcha_required"
+        assert result["description_placeholders"]["preflight_status"] == "ready"
 
     @patch("custom_components.psegli.config_flow.PSEGLIClient")
     @patch("custom_components.psegli.config_flow.get_fresh_cookies", new_callable=AsyncMock)
@@ -177,13 +180,55 @@ class TestPSEGLIConfigFlow:
         assert result["type"] == "create_entry"
         assert result["data"][CONF_COOKIE] == ""
 
-    async def test_user_step_shows_form_on_first_visit(self, mock_hass):
-        """First visit (no input) shows the form."""
+    @patch("custom_components.psegli.config_flow.check_addon_health", new_callable=AsyncMock)
+    async def test_user_step_shows_form_on_first_visit(self, mock_health, mock_hass):
+        """First visit (no input) shows the form with preflight status."""
+        mock_health.return_value = True
         flow = _make_config_flow(mock_hass)
         result = await flow.async_step_user(None)
 
         assert result["type"] == "form"
         assert result["step_id"] == "user"
+        assert "description_placeholders" in result
+        assert result["description_placeholders"]["preflight_status"] == "ready"
+
+    @patch("custom_components.psegli.config_flow.check_addon_health", new_callable=AsyncMock)
+    async def test_user_step_preflight_unreachable_shows_remediation(self, mock_health, mock_hass):
+        """Phase G: When add-on is unreachable, form shows unreachable status and message."""
+        mock_health.return_value = False
+        flow = _make_config_flow(mock_hass)
+        result = await flow.async_step_user(None)
+
+        assert result["type"] == "form"
+        assert result["description_placeholders"]["preflight_status"] == "unreachable"
+        assert "not reachable" in result["description_placeholders"]["preflight_message"]
+        assert "Install and start" in result["description_placeholders"]["preflight_message"]
+
+    @patch("custom_components.psegli.config_flow.check_addon_health", new_callable=AsyncMock)
+    @patch("custom_components.psegli.config_flow.PSEGLIClient")
+    async def test_user_step_preflight_uses_submitted_addon_url_on_form_rerender(
+        self, mock_client_cls, mock_health, mock_hass
+    ):
+        """Preflight should evaluate the user-submitted addon URL on rerender."""
+        custom_url = "http://my-addon-host:8000"
+        mock_health.return_value = False
+        mock_client = MagicMock()
+        mock_client.test_connection = MagicMock(side_effect=InvalidAuth("bad cookie"))
+        mock_client_cls.return_value = mock_client
+
+        flow = _make_config_flow(mock_hass)
+        result = await flow.async_step_user(
+            {
+                CONF_USERNAME: "user@example.com",
+                CONF_PASSWORD: "pass",
+                CONF_COOKIE: "MM_SID=bad",
+                CONF_ADDON_URL: custom_url,
+            }
+        )
+
+        assert result["type"] == "form"
+        assert result["errors"]["base"] == "invalid_auth"
+        mock_health.assert_awaited_with(custom_url)
 
     async def test_single_instance_enforcement(self, mock_hass):
         """Second config flow is aborted by unique ID."""
@@ -304,6 +349,7 @@ class TestPSEGLIOptionsFlow:
 
         assert result["type"] == "create_entry"
         assert result["data"][CONF_ADDON_URL] == discovered_url
+        assert result["data"]["_addon_url_auto"] is True
 
     @patch("custom_components.psegli.config_flow.get_fresh_cookies", new_callable=AsyncMock)
     async def test_options_no_cookie_captcha_still_saves_options(
@@ -349,6 +395,46 @@ class TestPSEGLIOptionsFlow:
         result = await flow.async_step_init({CONF_COOKIE: ""})
 
         assert result["type"] == "create_entry"
+
+    @patch("custom_components.psegli.config_flow.PSEGLIClient")
+    async def test_options_preserves_internal_auto_url_flag(
+        self, mock_client_cls, mock_hass, mock_config_entry
+    ):
+        """Internal auto-managed URL flag is retained when URL is not manually overridden."""
+        mock_config_entry.options = {
+            CONF_ADDON_URL: "http://84ee8c30-psegli-automation:8000",
+            "_addon_url_auto": True,
+        }
+        mock_client = MagicMock()
+        mock_client.test_connection = MagicMock(return_value=True)
+        mock_client_cls.return_value = mock_client
+
+        flow = _make_options_flow(mock_hass, mock_config_entry)
+        result = await flow.async_step_init({CONF_COOKIE: "MM_SID=new"})
+
+        assert result["type"] == "create_entry"
+        assert result["data"]["_addon_url_auto"] is True
+
+    @patch("custom_components.psegli.config_flow.PSEGLIClient")
+    async def test_options_manual_addon_url_override_clears_auto_url_flag(
+        self, mock_client_cls, mock_hass, mock_config_entry
+    ):
+        """Explicit manual addon_url change should clear internal auto-managed flag."""
+        mock_config_entry.options = {
+            CONF_ADDON_URL: "http://84ee8c30-psegli-automation:8000",
+            "_addon_url_auto": True,
+        }
+        mock_client = MagicMock()
+        mock_client.test_connection = MagicMock(return_value=True)
+        mock_client_cls.return_value = mock_client
+
+        flow = _make_options_flow(mock_hass, mock_config_entry)
+        result = await flow.async_step_init(
+            {CONF_COOKIE: "MM_SID=new", CONF_ADDON_URL: "http://custom-addon:8000"}
+        )
+
+        assert result["type"] == "create_entry"
+        assert "_addon_url_auto" not in result["data"]
 
     async def test_options_shows_form_on_first_visit(self, mock_hass, mock_config_entry):
         """First visit (no input) shows the options form."""

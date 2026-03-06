@@ -13,6 +13,7 @@ import inspect
 import json
 import logging
 import os
+import shutil
 import time
 from enum import Enum
 from typing import Optional
@@ -20,10 +21,34 @@ from typing import Optional
 from playwright.async_api import async_playwright, BrowserContext, Page
 from playwright_stealth import Stealth
 
+from profile_state import (
+    get_profile_status,
+    load_profile_state,
+    record_captcha,
+    record_login_success,
+    record_profile_created,
+    record_profile_failed,
+    set_warmup_state,
+    PROFILE_DIR_PERSISTENT,
+    WARMUP_READY,
+    WARMUP_WARMING,
+    WARMUP_IDLE,
+    WARMUP_FAILED,
+)
+
 _LOGGER = logging.getLogger(__name__)
 
-# Default persistent browser profile location
+# Default persistent browser profile location (local dev)
 DEFAULT_PROFILE_DIR = os.path.join(os.path.dirname(__file__), ".browser_profile")
+
+
+def get_effective_profile_dir(profile_dir: Optional[str] = None) -> str:
+    """Return persistent profile dir when /data exists, else default or caller-provided."""
+    if profile_dir:
+        return profile_dir
+    if os.path.isdir("/data"):
+        return PROFILE_DIR_PERSISTENT
+    return DEFAULT_PROFILE_DIR
 
 # URLs
 LOGIN_URL = "https://mysmartenergy.psegliny.com/Dashboard"
@@ -51,53 +76,115 @@ class PSEGAutoLogin:
         self.email = email
         self.password = password
         self.headless = headless
-        self.profile_dir = profile_dir or DEFAULT_PROFILE_DIR
+        self.profile_dir = get_effective_profile_dir(profile_dir)
         self.playwright = None
         self.context: Optional[BrowserContext] = None
         self.page: Optional[Page] = None
 
-    async def setup_browser(self) -> bool:
-        """Initialize Playwright with stealth and persistent profile."""
+    async def _launch_context(self) -> bool:
+        """Launch Playwright and persistent context. Returns True on success."""
+        self.playwright = await async_playwright().start()
+        stealth = Stealth()
+        self.context = await self.playwright.chromium.launch_persistent_context(
+            user_data_dir=self.profile_dir,
+            headless=self.headless,
+            args=[
+                "--no-sandbox",
+                "--disable-blink-features=AutomationControlled",
+                "--disable-dev-shm-usage",
+                "--disable-gpu",
+            ],
+            viewport={"width": 1920, "height": 1080},
+            user_agent=(
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/138.0.0.0 Safari/537.36"
+            ),
+            locale="en-US",
+            timezone_id="America/New_York",
+        )
+        self.page = (
+            self.context.pages[0]
+            if self.context.pages
+            else await self.context.new_page()
+        )
+        await stealth.apply_stealth_async(self.page)
+        self.page.set_default_timeout(30000)
+        return True
+
+    def _rotate_profile_dir(self) -> None:
+        """On corruption: rename current profile dir and record fresh profile."""
+        if not os.path.isdir(self.profile_dir):
+            record_profile_created()
+            return
         try:
-            _LOGGER.info("Initializing Playwright browser...")
-            self.playwright = await async_playwright().start()
+            stamp = int(time.time())
+            backup = f"{self.profile_dir}.corrupt_{stamp}"
+            shutil.move(self.profile_dir, backup)
+            _LOGGER.warning("Rotated corrupted profile to %s", backup)
+        except OSError as e:
+            _LOGGER.warning("Could not rotate profile dir %s: %s", self.profile_dir, e)
+        record_profile_created()
 
-            stealth = Stealth()
-            self.context = await self.playwright.chromium.launch_persistent_context(
-                user_data_dir=self.profile_dir,
-                headless=self.headless,
-                args=[
-                    "--no-sandbox",
-                    "--disable-blink-features=AutomationControlled",
-                    "--disable-dev-shm-usage",
-                    "--disable-gpu",
-                ],
-                viewport={"width": 1920, "height": 1080},
-                user_agent=(
-                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                    "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/138.0.0.0 Safari/537.36"
-                ),
-                locale="en-US",
-                timezone_id="America/New_York",
-            )
+    def _should_rotate_profile_for_launch_error(self, err: Exception) -> bool:
+        """Best-effort classifier for profile-corruption launch failures."""
+        msg = f"{type(err).__name__}: {err}".lower()
+        rotate_markers = (
+            "profile",
+            "user data dir",
+            "user_data_dir",
+            "database is malformed",
+            "corrupt",
+            "sqlite",
+            "lock",
+        )
+        return any(marker in msg for marker in rotate_markers)
 
-            self.page = (
-                self.context.pages[0]
-                if self.context.pages
-                else await self.context.new_page()
-            )
-
-            await stealth.apply_stealth_async(self.page)
-            self.page.set_default_timeout(30000)
-
-            _LOGGER.info("Browser initialized successfully")
+    async def _warmup_profile(self) -> bool:
+        """Single trust-building visit to login page (no credentials)."""
+        set_warmup_state(WARMUP_WARMING)
+        try:
+            _LOGGER.info("Warming up profile: visiting login page")
+            await self.page.goto(LOGIN_URL, wait_until="domcontentloaded")
+            await asyncio.sleep(1)
+            set_warmup_state(WARMUP_READY)
             return True
-
         except Exception as e:
-            _LOGGER.error("Failed to setup browser: %s", e)
-            await self.cleanup()
+            _LOGGER.debug("Warm-up visit failed (non-fatal): %s", e)
+            set_warmup_state(WARMUP_FAILED)
             return False
+
+    async def setup_browser(self) -> bool:
+        """Initialize Playwright with persistent profile. Rotate on corruption and retry once."""
+        _LOGGER.info("Initializing Playwright browser...")
+        rotated_profile = False
+        for attempt in (1, 2):
+            try:
+                if await self._launch_context():
+                    _LOGGER.info("Browser initialized successfully")
+                    return True
+            except Exception as e:
+                _LOGGER.warning("Browser setup attempt %d failed: %s", attempt, e)
+                await self.cleanup()
+                should_rotate = (
+                    attempt == 1
+                    and not rotated_profile
+                    and self._should_rotate_profile_for_launch_error(e)
+                )
+                if should_rotate:
+                    record_profile_failed()
+                    self._rotate_profile_dir()
+                    rotated_profile = True
+                    continue
+                if attempt == 1:
+                    _LOGGER.warning(
+                        "Retrying browser setup without profile rotation (error not classified as corruption)"
+                    )
+                    continue
+                record_profile_failed()
+                _LOGGER.error("Failed to setup browser after retry: %s", e)
+                return False
+        return False
 
     async def login(self) -> tuple[LoginResult, Optional[str]]:
         """
@@ -135,6 +222,7 @@ class PSEGAutoLogin:
                 _LOGGER.info("Already authenticated from previous session")
                 cookie_str = await self._extract_cookies()
                 if cookie_str:
+                    record_login_success()
                     return LoginResult.SUCCESS, cookie_str
                 # Session expired despite no login form — fall through to re-login
                 _LOGGER.warning("No login form but no valid cookies — session may be stale")
@@ -183,29 +271,35 @@ class PSEGAutoLogin:
 
                 if "captcha" in error_msg.lower():
                     _LOGGER.warning("CAPTCHA challenge required — manual intervention needed")
+                    record_captcha()
                     return LoginResult.CAPTCHA_REQUIRED, None
 
                 if error_msg:
                     _LOGGER.error("Login failed: %s", error_msg)
+                    record_profile_failed()
                     return LoginResult.FAILED, None
 
             # Check if we're on the authenticated dashboard
             login_form_still = await self.page.query_selector("#LoginEmail")
             if login_form_still:
                 await self._log_login_failure_context(login_response)
+                record_profile_failed()
                 return LoginResult.FAILED, None
 
             # Extract cookies
             cookie_str = await self._extract_cookies()
             if cookie_str:
                 _LOGGER.info("Login successful, cookies obtained")
+                record_login_success()
                 return LoginResult.SUCCESS, cookie_str
 
             _LOGGER.warning("Login appeared to succeed but no cookies found")
+            record_profile_failed()
             return LoginResult.FAILED, None
 
         except Exception as e:
             _LOGGER.error("Login error: %s", e)
+            record_profile_failed()
             return LoginResult.FAILED, None
         finally:
             try:
@@ -309,6 +403,11 @@ class PSEGAutoLogin:
         try:
             if not await self.setup_browser():
                 return None
+
+            # Optional warm-up after fresh/rotated profile (Phase D)
+            state = load_profile_state()
+            if state.get("warmup_state") in (WARMUP_IDLE, WARMUP_FAILED) and self.page:
+                await self._warmup_profile()
 
             result, cookies = await self.login()
 
