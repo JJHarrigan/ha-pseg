@@ -14,6 +14,25 @@ def mock_get_addon_profile_status():
     with patch("custom_components.psegli.get_addon_profile_status", new_callable=AsyncMock, return_value=None):
         yield
 
+
+# Avoid "Unclosed client session" when tests invoke real supervisor discovery path
+@pytest.fixture(autouse=True)
+def mock_supervisor_clientsession():
+    """Mock async_get_clientsession in supervisor so no real aiohttp session is created."""
+    mock_resp = AsyncMock()
+    mock_resp.status = 404
+    mock_resp.json = AsyncMock(return_value={})
+    mock_session = MagicMock()
+    mock_session.get = MagicMock(
+        return_value=AsyncMock(
+            __aenter__=AsyncMock(return_value=mock_resp),
+            __aexit__=AsyncMock(return_value=False),
+        )
+    )
+    with patch("custom_components.psegli.supervisor.async_get_clientsession", return_value=mock_session):
+        yield
+
+
 from custom_components.psegli import (
     _process_chart_data,
     async_setup_entry,
