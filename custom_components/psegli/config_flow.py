@@ -31,6 +31,7 @@ from .auto_login import (
 )
 
 _LOGGER = logging.getLogger(__name__)
+_OPTION_ADDON_URL_AUTO = "_addon_url_auto"
 
 
 def _normalize_addon_url(value: str | None) -> str:
@@ -204,12 +205,19 @@ class PSEGLIOptionsFlow(config_entries.OptionsFlow):
                         self.config_entry.data.get(CONF_ADDON_URL),
                     )
                 )
+                current_auto_managed = bool(
+                    self.config_entry.options.get(_OPTION_ADDON_URL_AUTO)
+                )
                 addon_url = _normalize_addon_url(
                     user_input.get(CONF_ADDON_URL, current_addon_url)
+                )
+                manual_url_override = (
+                    CONF_ADDON_URL in user_input and addon_url != current_addon_url
                 )
 
                 # Always persist observability options
                 options_data = {
+                    **self.config_entry.options,
                     CONF_ADDON_URL: addon_url,
                     CONF_DIAGNOSTIC_LEVEL: user_input.get(
                         CONF_DIAGNOSTIC_LEVEL, DIAGNOSTIC_STANDARD
@@ -218,6 +226,10 @@ class PSEGLIOptionsFlow(config_entries.OptionsFlow):
                         CONF_NOTIFICATION_LEVEL, NOTIFICATION_CRITICAL_ONLY
                     ),
                 }
+                if manual_url_override:
+                    options_data.pop(_OPTION_ADDON_URL_AUTO, None)
+                elif current_auto_managed:
+                    options_data[_OPTION_ADDON_URL_AUTO] = True
 
                 # If user provided a new cookie, validate it
                 if new_cookie:
@@ -258,6 +270,7 @@ class PSEGLIOptionsFlow(config_entries.OptionsFlow):
                                     addon_url,
                                     discovered_url,
                                 )
+                                options_data[_OPTION_ADDON_URL_AUTO] = True
                             addon_url = discovered_url
                             options_data[CONF_ADDON_URL] = addon_url
 
