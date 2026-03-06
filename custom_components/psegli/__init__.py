@@ -43,6 +43,9 @@ from .const import (
     CAPTCHA_AUTO_RETRY_DELAYS_MINUTES,
     FIRST_START_GRACE_RETRIES,
     FIRST_START_GRACE_DELAY_SECONDS,
+    CONF_PROACTIVE_REFRESH_MAX_AGE_HOURS,
+    DEFAULT_PROACTIVE_REFRESH_MAX_AGE_HOURS,
+    EXPIRY_WARNING_THRESHOLD_PERCENT,
 )
 from .psegli import InvalidAuth, PSEGLIClient, PSEGLIError
 from .auto_login import (
@@ -65,6 +68,7 @@ _LAST_AUTH_LOOP_NOTIFICATION_AT = "_last_chart_auth_loop_notification_at"
 _REFRESH_IN_PROGRESS_TASK = "_refresh_in_progress_task"
 _PENDING_AUTH_REFRESH_TASK = "_pending_auth_refresh_task"
 _CAPTCHA_RETRY_TASK = "_captcha_retry_task"
+_LAST_EXPIRY_WARNING_AT = "_last_expiry_warning_at"
 
 _AUTH_FAILURE_THRESHOLD = 3
 _AUTH_FAILURE_REFRESH_DELAY_SECONDS = 10
@@ -846,6 +850,57 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             if not username or not password:
                 _LOGGER.warning("No credentials available for scheduled cookie refresh")
                 return
+
+            # Proactive refresh: refresh before cookie is expected to expire
+            max_age_hours = active_entry.options.get(
+                CONF_PROACTIVE_REFRESH_MAX_AGE_HOURS,
+                DEFAULT_PROACTIVE_REFRESH_MAX_AGE_HOURS,
+            )
+            if max_age_hours and max_age_hours > 0:
+                obtained_at = domain_data.get(_COOKIE_OBTAINED_AT)
+                if obtained_at:
+                    cookie_age = datetime.now(tz=timezone.utc) - obtained_at
+                    max_age = timedelta(hours=max_age_hours)
+
+                    # Expiry warning: notify when approaching threshold
+                    warning_age = max_age * EXPIRY_WARNING_THRESHOLD_PERCENT / 100
+                    if cookie_age >= warning_age and cookie_age < max_age:
+                        now = datetime.now(tz=timezone.utc)
+                        last_warning = domain_data.get(_LAST_EXPIRY_WARNING_AT)
+                        if last_warning is None or now - last_warning >= timedelta(hours=4):
+                            pct = int(cookie_age / max_age * 100)
+                            remaining = max_age - cookie_age
+                            _LOGGER.warning(
+                                "Cookie age (%s) is %d%% of max lifetime (%sh); ~%s remaining",
+                                cookie_age, pct, max_age_hours, remaining,
+                            )
+                            await hass.services.async_call(
+                                "persistent_notification",
+                                "create",
+                                {
+                                    "title": "PSEG Integration: Cookie Expiring Soon",
+                                    "message": (
+                                        f"Your PSEG authentication cookie is {pct}% "
+                                        f"of its expected lifetime. Automatic refresh will be "
+                                        f"attempted when it reaches {max_age_hours}h."
+                                    ),
+                                    "notification_id": "psegli_cookie_expiry_warning",
+                                },
+                            )
+                            domain_data[_LAST_EXPIRY_WARNING_AT] = now
+
+                    # Proactive refresh: cookie exceeded max age
+                    if cookie_age >= max_age:
+                        _LOGGER.info(
+                            "Cookie age (%s) exceeds proactive threshold (%sh), refreshing",
+                            cookie_age, max_age_hours,
+                        )
+                        await _refresh_cookie_shared(
+                            trigger_reason="proactive_age",
+                            notify_on_success=False,
+                            notify_on_failure=False,
+                        )
+                        return
 
             # If we have a cookie, test it first — skip refresh if still valid
             if cookie and active_entry.entry_id in hass.data.get(DOMAIN, {}):
