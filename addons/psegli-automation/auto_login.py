@@ -10,7 +10,6 @@ after a few visits with a persistent browser profile.
 
 import asyncio
 import inspect
-import json
 import logging
 import os
 import shutil
@@ -21,6 +20,7 @@ from typing import Optional
 from playwright.async_api import async_playwright, BrowserContext, Page
 from playwright_stealth import Stealth
 
+from artifacts import prune_login_failure_artifacts, save_login_failure_artifact
 from profile_state import (
     get_profile_status,
     load_profile_state,
@@ -356,7 +356,13 @@ class PSEGAutoLogin:
             except Exception:
                 pass
 
-    async def _log_login_failure_context(self, login_response: dict) -> None:
+    async def _log_login_failure_context(
+        self,
+        login_response: dict,
+        *,
+        category: str | None = None,
+        subreason: str | None = None,
+    ) -> None:
         """Capture high-signal context when login remains on the login page."""
         url = self.page.url
         title = "unknown"
@@ -394,6 +400,18 @@ class PSEGAutoLogin:
         api_error = api_data.get("LoginErrorMessage") or login_response.get("error")
         api_status = login_response.get("_status")
 
+        if category is None:
+            if api_error and "captcha" in str(api_error).lower():
+                category = "captcha_required"
+            elif api_error:
+                category = "invalid_credentials"
+            elif has_recaptcha_iframe:
+                category = "captcha_required"
+            else:
+                category = "unknown_runtime_error"
+                if subreason is None:
+                    subreason = "site_flow_changed"
+
         _LOGGER.error(
             "Login failed — still on login page (url=%s title=%s recaptcha_iframe=%s login_api_status=%s login_api_error=%s page_errors=%s)",
             url,
@@ -404,22 +422,22 @@ class PSEGAutoLogin:
             " | ".join(page_errors) if page_errors else "none",
         )
 
-        # Save artifacts for post-mortem while debugging hard failures.
-        try:
-            stamp = int(time.time())
-            html_path = f"/tmp/psegli_login_failure_{stamp}.html"
-            screenshot_path = f"/tmp/psegli_login_failure_{stamp}.png"
-            html = await self.page.content()
-            with open(html_path, "w", encoding="utf-8") as f:
-                f.write(html)
-            await self.page.screenshot(path=screenshot_path, full_page=True)
+        metadata = await save_login_failure_artifact(
+            page=self.page,
+            category=category,
+            subreason=subreason,
+            url=url,
+            title=title,
+            recaptcha_iframe=has_recaptcha_iframe,
+        )
+        prune_login_failure_artifacts()
+        if metadata:
             _LOGGER.info(
-                "Saved login failure artifacts: html=%s screenshot=%s",
-                html_path,
-                screenshot_path,
+                "Saved login failure artifacts: id=%s html=%s screenshot=%s",
+                metadata.get("id"),
+                metadata.get("html_file"),
+                metadata.get("screenshot_file"),
             )
-        except Exception as e:
-            _LOGGER.warning("Failed to save login failure artifacts: %s", e)
 
     async def _extract_cookies(self) -> Optional[str]:
         """Extract MM_SID and __RequestVerificationToken from browser context."""

@@ -15,6 +15,7 @@ import uvicorn
 from fastapi import FastAPI, Form
 from pydantic import BaseModel
 
+from artifacts import list_login_failure_artifacts, prune_login_failure_artifacts
 from auto_login import CAPTCHA_REQUIRED_SENTINEL, get_fresh_cookies, get_effective_profile_dir
 from profile_state import get_profile_status
 
@@ -76,11 +77,24 @@ async def health_check():
     return {"status": "healthy", "service": "psegli-automation"}
 
 
+@app.on_event("startup")
+async def startup_maintenance():
+    """Apply retention pruning on startup."""
+    await asyncio.to_thread(prune_login_failure_artifacts)
+
+
 @app.get("/profile-status")
 async def profile_status():
     """Profile status for Phase D: profile_created_at, last_success, captcha count, size, warmup_state."""
     profile_dir = get_effective_profile_dir()
     return await asyncio.to_thread(get_profile_status, profile_dir)
+
+
+@app.get("/artifacts/login-failures")
+async def login_failure_artifacts(limit: int = 10):
+    """Metadata-only listing of login-failure artifacts."""
+    safe_limit = max(1, min(limit, 100))
+    return await asyncio.to_thread(list_login_failure_artifacts, safe_limit)
 
 
 @app.post("/login", response_model=LoginResponse)

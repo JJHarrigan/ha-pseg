@@ -50,6 +50,46 @@ class TestFastAPIEndpoints:
             assert data["warmup_state"] in ("idle", "warming", "ready", "failed")
 
     @pytest.mark.asyncio
+    async def test_login_failures_artifact_endpoint_contract(self):
+        """Task 2: /artifacts/login-failures returns metadata-only listing payload."""
+        payload = {
+            "count": 1,
+            "items": [
+                {
+                    "id": "1773000000000",
+                    "created_at": "2026-03-06T00:00:00+00:00",
+                    "category": "unknown_runtime_error",
+                    "subreason": "site_flow_changed",
+                    "url": "https://mysmartenergy.psegliny.com/",
+                    "title": "MySmartEnergy",
+                    "recaptcha_iframe": False,
+                    "html_file": "1773000000000/page.html",
+                    "screenshot_file": "1773000000000/page.png",
+                }
+            ],
+        }
+        with patch("run.list_login_failure_artifacts", return_value=payload, create=True):
+            transport = ASGITransport(app=app)
+            async with AsyncClient(transport=transport, base_url="http://test") as client:
+                resp = await client.get("/artifacts/login-failures?limit=5")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["count"] == 1
+        assert data["items"][0]["id"] == "1773000000000"
+        assert "html" not in data["items"][0]
+
+    @pytest.mark.asyncio
+    async def test_startup_prunes_login_failure_artifacts(self):
+        """Task 2: add-on startup should trigger artifact retention pruning once."""
+        with patch("run.prune_login_failure_artifacts", create=True) as mock_prune:
+            from run import startup_maintenance
+
+            await startup_maintenance()
+
+        mock_prune.assert_called()
+
+    @pytest.mark.asyncio
     async def test_no_mfa_endpoint(self):
         """Verify /login/mfa returns 404 (removed)."""
         transport = ASGITransport(app=app)

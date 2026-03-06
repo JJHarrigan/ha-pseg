@@ -11,6 +11,7 @@ import pytest
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "addons", "psegli-automation"))
 
 from auto_login import PSEGAutoLogin, LoginResult, get_fresh_cookies
+from artifacts import prune_login_failure_artifacts
 
 
 @pytest.fixture
@@ -432,3 +433,70 @@ class TestPSEGAutoLogin:
 
         assert result == "MM_SID=test_cookie"
         mock_warmup.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_login_failure_artifacts_use_persistent_data_dir(self, tmp_path):
+        """Failure artifacts should be written under /data/login_failures, not /tmp."""
+        login = _make_login_instance()
+        login.page = AsyncMock()
+        login.page.url = "https://mysmartenergy.psegliny.com/"
+        login.page.title = AsyncMock(return_value="MySmartEnergy")
+        login.page.query_selector = AsyncMock(return_value=None)
+        login.page.content = AsyncMock(return_value="<html>failure</html>")
+        login.page.screenshot = AsyncMock()
+        artifacts_root = str(tmp_path / "login-failures")
+
+        with patch.dict(os.environ, {"PSEGLI_LOGIN_FAILURES_DIR": artifacts_root}):
+            await login._log_login_failure_context({})
+
+        screenshot_path = login.page.screenshot.await_args.kwargs["path"]
+        assert screenshot_path.startswith(f"{artifacts_root}/")
+
+    @pytest.mark.asyncio
+    async def test_login_failure_artifacts_prune_after_write(self):
+        """Artifact retention pruning should run after writing a failure artifact."""
+        login = _make_login_instance()
+        login.page = AsyncMock()
+        login.page.url = "https://mysmartenergy.psegliny.com/"
+        login.page.title = AsyncMock(return_value="MySmartEnergy")
+        login.page.query_selector = AsyncMock(return_value=None)
+        login.page.content = AsyncMock(return_value="<html>failure</html>")
+        login.page.screenshot = AsyncMock()
+        artifacts_root = "/tmp/psegli-test-login-failures-prune"
+
+        with patch.dict(os.environ, {"PSEGLI_LOGIN_FAILURES_DIR": artifacts_root}):
+            with patch("auto_login.prune_login_failure_artifacts", create=True) as mock_prune:
+                await login._log_login_failure_context({})
+
+        mock_prune.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_login_failure_artifact_write_error_is_non_fatal(self):
+        """Artifact write failures should not raise and should keep login flow alive."""
+        login = _make_login_instance()
+        login.page = AsyncMock()
+        login.page.url = "https://mysmartenergy.psegliny.com/"
+        login.page.title = AsyncMock(return_value="MySmartEnergy")
+        login.page.query_selector = AsyncMock(return_value=None)
+        login.page.content = AsyncMock(return_value="<html>failure</html>")
+        login.page.screenshot = AsyncMock(side_effect=OSError("disk full"))
+
+        # Should not raise even when artifact persistence fails.
+        await login._log_login_failure_context({})
+
+    def test_prune_login_failure_artifacts_keeps_latest_ten(self, tmp_path):
+        """Retention policy should keep only the latest 10 artifact directories."""
+        root = tmp_path / "login_failures"
+        root.mkdir(parents=True)
+
+        # Create 12 timestamp-based artifact directories.
+        for i in range(12):
+            (root / f"{1773000000000 + i}").mkdir()
+
+        with patch.dict(os.environ, {"PSEGLI_LOGIN_FAILURES_DIR": str(root)}):
+            prune_login_failure_artifacts(keep=10)
+
+        remaining = sorted(p.name for p in root.iterdir() if p.is_dir())
+        assert len(remaining) == 10
+        assert remaining[0] == "1773000000002"
+        assert remaining[-1] == "1773000000011"
