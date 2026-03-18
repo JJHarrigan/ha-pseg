@@ -136,8 +136,20 @@ logger = logging.getLogger(__name__)
 # Initialize persisted debug state on startup
 if DEBUG_ENABLED:
     _existing_state = _load_debug_state()
-    if not _existing_state.get("debug_enabled"):
-        # Debug was just turned on — record the timestamp
+    if not _existing_state.get("debug_enabled") and _existing_state.get("debug_enabled_at") is not None:
+        # Auto-disable previously fired (state=False but timestamp exists).
+        # Honor the persisted decision: downgrade to INFO without re-arming.
+        DEBUG_ENABLED = False
+        LOG_LEVEL = logging.INFO
+        logging.getLogger().setLevel(logging.INFO)
+        for _h in logging.getLogger().handlers:
+            _h.setLevel(logging.INFO)
+        logger.info(
+            "Debug was auto-disabled in a prior run; staying at INFO "
+            "(set debug: false then debug: true to re-arm)"
+        )
+    elif not _existing_state.get("debug_enabled"):
+        # First time debug is turned on — record the timestamp
         _save_debug_state({
             "debug_enabled": True,
             "debug_enabled_at": time.time(),
@@ -149,14 +161,15 @@ if DEBUG_ENABLED:
             _existing_state["auto_disable_hours"] = _AUTO_DISABLE_HOURS
             _save_debug_state(_existing_state)
     # Check if auto-disable should fire immediately (e.g., after restart)
-    _check_auto_disable()
+    if DEBUG_ENABLED:
+        _check_auto_disable()
 else:
-    # Debug is off — clear any persisted debug-enabled state
+    # Debug is off — clear persisted state entirely so next enable is a fresh cycle
     _existing_state = _load_debug_state()
-    if _existing_state.get("debug_enabled"):
+    if _existing_state.get("debug_enabled") or _existing_state.get("debug_enabled_at") is not None:
         _save_debug_state({
             "debug_enabled": False,
-            "debug_enabled_at": _existing_state.get("debug_enabled_at"),
+            "debug_enabled_at": None,
             "auto_disable_hours": _AUTO_DISABLE_HOURS,
         })
 
