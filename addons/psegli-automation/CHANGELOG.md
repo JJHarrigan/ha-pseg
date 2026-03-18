@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+- Add persistent debug auto-disable lifecycle control:
+  - New `debug_auto_disable_hours` option (default `0` = disabled)
+  - Auto-disable state persisted under `/data/debug_state.json` (survives restarts)
+  - Runtime `setLevel()` when timer expires — no restart required
+  - New `GET /debug-status` endpoint for programmatic state inspection
+- Add troubleshooting runbook to README:
+  - Failure-category remediation matrix with all canonical categories
+  - Artifact retrieval/listing flow documentation
+  - Post-stabilization debug-disable procedure
+- Harden release process documentation:
+  - Rollback procedure with incident tracking
+  - Pre-release verification checklist
+
 ## 2.5.1.3
 
 - Fix add-on login result classification for reCAPTCHA challenge edge case:

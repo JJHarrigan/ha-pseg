@@ -70,3 +70,35 @@ gh run list --limit 10
 ```
 
 Note: this repository currently has a `Tests` workflow only; there is no separate in-repo publish/build workflow file under `.github/workflows/`.
+
+## 8) Rollback Procedure
+
+If a critical regression is reported within 48 hours of release:
+
+1. **Identify the rollback target** — the last known-good release tag (e.g., `v2.5.1.3`).
+2. **Revert or cherry-pick** the offending commits on `main`:
+   ```bash
+   git revert <commit-range>
+   git push
+   ```
+3. **Bump version** to next patch (e.g., `2.5.2.1`) with the revert:
+   ```bash
+   python3 scripts/sync_version.py --set <ROLLBACK_VERSION>
+   ```
+4. **Run tests**, tag, and publish the rollback release following steps 3-7 above.
+5. **Open an incident issue** on GitHub documenting the regression, root cause, and rollback timeline.
+
+Users running the HA add-on will pick up the new version on next add-on update. For immediate rollback, users can manually install the prior version tag.
+
+## Pre-Release Verification Checklist
+
+Before publishing any release, confirm:
+
+- [ ] `## Unreleased` in CHANGELOG.md contains only future work (not shipping items)
+- [ ] New version heading exists with complete release notes
+- [ ] `python3 scripts/sync_version.py --set <version>` ran successfully
+- [ ] `.venv/bin/python -m pytest -q` passes with no new failures
+- [ ] No new warnings beyond known baseline (`pytest -q 2>&1 | grep -c warning`)
+- [ ] Release body in `gh release create` matches the changelog section verbatim
+- [ ] Integration `manifest.json` version matches `VERSION` file
+- [ ] Add-on `config.yaml` version matches `VERSION` file
