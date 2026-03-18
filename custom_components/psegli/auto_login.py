@@ -185,6 +185,35 @@ async def get_addon_profile_status(addon_url: Optional[str] = None) -> Optional[
     return None
 
 
+async def get_addon_failure_artifacts(
+    addon_url: Optional[str] = None, limit: int = 10
+) -> Optional[dict]:
+    """Fetch artifact metadata from the add-on. Best effort; returns None on error."""
+    base_url = _normalize_addon_url(addon_url)
+    safe_limit = max(1, min(int(limit), 100))
+    artifacts_url = f"{base_url}/artifacts/login-failures?limit={safe_limit}"
+    try:
+        timeout = aiohttp.ClientTimeout(total=5)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.get(artifacts_url) as resp:
+                if resp.status == 200:
+                    payload = await resp.json()
+                    if isinstance(payload, dict):
+                        return payload
+    except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
+        logger.debug(
+            "Addon login-failure artifacts unavailable or invalid JSON: %s",
+            artifacts_url,
+        )
+    except Exception as err:  # pragma: no cover - defensive
+        logger.debug(
+            "Unexpected login-failure artifacts error from %s: %s",
+            artifacts_url,
+            err,
+        )
+    return None
+
+
 async def _attempt_login(
     session: aiohttp.ClientSession,
     login_data: dict,

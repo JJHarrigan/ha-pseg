@@ -6,6 +6,7 @@ import logging
 import uuid
 from datetime import datetime, timedelta, timezone
 from typing import Any
+from collections.abc import Awaitable, Callable
 
 import pytz
 
@@ -59,6 +60,7 @@ from .auto_login import (
     get_fresh_cookies,
     check_addon_health,
     get_addon_profile_status,
+    get_addon_failure_artifacts,
     CAPTCHA_REQUIRED,
     LoginResult,
     CATEGORY_CAPTCHA_REQUIRED,
@@ -78,6 +80,7 @@ _LAST_AUTH_LOOP_NOTIFICATION_AT = "_last_chart_auth_loop_notification_at"
 _REFRESH_IN_PROGRESS_TASK = "_refresh_in_progress_task"
 _PENDING_AUTH_REFRESH_TASK = "_pending_auth_refresh_task"
 _CAPTCHA_RETRY_TASK = "_captcha_retry_task"
+_STATISTICS_UPDATE_IN_PROGRESS_TASK = "_statistics_update_in_progress_task"
 _LAST_EXPIRY_WARNING_AT = "_last_expiry_warning_at"
 
 _AUTH_FAILURE_THRESHOLD = 3
@@ -99,6 +102,7 @@ _LAST_WORKING_ADDON_URL = "_last_working_addon_url"
 _ADDON_CIRCUIT_OPEN_THRESHOLD = 3
 _ADDON_CIRCUIT_OPEN_DURATION = timedelta(minutes=10)
 _ADDON_UNREACHABLE_NOTIFICATION_COOLDOWN = timedelta(hours=24)
+_ARTIFACT_LIST_LIMIT = 10
 
 # Signal tracking keys (Phase 3.3)
 _SIGNAL_LAST_AUTH_PROBE_AT = "_last_auth_probe_at"
@@ -266,6 +270,76 @@ def _get_status_signals(domain_data: dict[str, Any]) -> dict[str, Any]:
         "addon_circuit_open_until": _iso(domain_data.get(_ADDON_CIRCUIT_OPEN_UNTIL)),
         "last_working_addon_url": domain_data.get(_LAST_WORKING_ADDON_URL),
     }
+
+
+def _build_artifact_list_endpoint(addon_url: str | None) -> str:
+    """Return the metadata-only artifact listing endpoint URL."""
+    base_url = (addon_url or DEFAULT_ADDON_URL).rstrip("/")
+    return f"{base_url}/artifacts/login-failures?limit={_ARTIFACT_LIST_LIMIT}"
+
+
+def _artifact_summary_defaults(addon_url: str | None) -> dict[str, Any]:
+    """Return neutral artifact-summary fields."""
+    return {
+        "artifact_count": 0,
+        "artifact_latest_created_at": None,
+        "artifact_list_endpoint": _build_artifact_list_endpoint(addon_url),
+    }
+
+
+def _latest_artifact_created_at(payload: dict[str, Any]) -> str | None:
+    """Return the latest created_at timestamp from an artifact listing payload."""
+    items = payload.get("items")
+    if not isinstance(items, list):
+        return None
+
+    latest: str | None = None
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        created_at = item.get("created_at")
+        if isinstance(created_at, str) and (latest is None or created_at > latest):
+            latest = created_at
+    return latest
+
+
+async def _build_status_snapshot(
+    hass: HomeAssistant,
+    entry: ConfigEntry | None,
+    domain_data: dict[str, Any],
+    *,
+    artifact_fetcher: Callable[[str | None, int], Awaitable[dict | None]] | None = None,
+) -> dict[str, Any]:
+    """Build the shared async status snapshot for services + diagnostics."""
+    snapshot = _get_status_signals(domain_data)
+    configured_url = _get_configured_addon_url(entry)
+    if artifact_fetcher is None:
+        artifact_fetcher = get_addon_failure_artifacts
+
+    try:
+        addon_url = await _get_addon_url(hass, entry)
+    except Exception as err:  # pragma: no cover - defensive
+        _LOGGER.debug("Could not resolve addon URL for status snapshot: %s", err)
+        addon_url = configured_url
+
+    snapshot.update(_artifact_summary_defaults(addon_url))
+
+    try:
+        payload = await artifact_fetcher(addon_url, _ARTIFACT_LIST_LIMIT)
+    except Exception as err:  # pragma: no cover - defensive
+        _LOGGER.debug("Artifact summary unavailable for %s: %s", addon_url, err)
+        payload = None
+
+    if isinstance(payload, dict):
+        count = payload.get("count", 0)
+        try:
+            artifact_count = max(0, int(count))
+        except (TypeError, ValueError):
+            artifact_count = 0
+        snapshot["artifact_count"] = artifact_count
+        snapshot["artifact_latest_created_at"] = _latest_artifact_created_at(payload)
+
+    return snapshot
 
 
 def _get_active_entry(hass: HomeAssistant) -> ConfigEntry | None:
@@ -619,6 +693,47 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             "Please check add-on status or provide a cookie manually."
         )
 
+    def _parse_captcha_retry_reason(
+        trigger_reason: str,
+    ) -> tuple[bool, int | None, str | None]:
+        """Return retry flag, attempt number, and origin for CAPTCHA retry reasons."""
+        prefix = "captcha_auto_retry_"
+        if not trigger_reason.startswith(prefix):
+            return False, None, None
+
+        suffix = trigger_reason[len(prefix):]
+        attempt_raw, _, origin = suffix.partition(":")
+        try:
+            attempt = int(attempt_raw)
+        except ValueError:
+            attempt = None
+        return True, attempt, origin or None
+
+    def _format_captcha_retry_reason(trigger_reason: str) -> str:
+        """Render CAPTCHA retry reasons with origin context for logs."""
+        is_retry, attempt, origin = _parse_captcha_retry_reason(trigger_reason)
+        if not is_retry:
+            return trigger_reason
+        attempt_label = attempt if attempt is not None else "?"
+        if origin:
+            return f"captcha_auto_retry_{attempt_label}:{origin}"
+        return f"captcha_auto_retry_{attempt_label}"
+
+    def _captcha_notification_message(trigger_reason: str) -> str:
+        """Build user-facing CAPTCHA notification text."""
+        is_retry, attempt, origin = _parse_captcha_retry_reason(trigger_reason)
+        if is_retry:
+            origin_text = f" triggered by {origin}" if origin else ""
+            attempt_label = attempt if attempt is not None else "?"
+            return (
+                f"reCAPTCHA is still required during automatic retry {attempt_label}"
+                f"{origin_text}. Automatic retries will continue while configured."
+            )
+        return (
+            "reCAPTCHA challenge was triggered. Try refresh_cookie again — "
+            "it usually passes after a few attempts."
+        )
+
     def _record_signal(key: str, value: Any) -> None:
         """Store a signal value in domain_data."""
         domain_data[key] = value
@@ -852,11 +967,13 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             )
         failure_url = login_result.addon_url or addon_url
         if login_result.category == CATEGORY_CAPTCHA_REQUIRED:
+            formatted_reason = _format_captcha_retry_reason(trigger_reason)
+            is_retry_attempt, _, _ = _parse_captcha_retry_reason(trigger_reason)
             _reset_addon_transport_state("captcha response")
             _LOGGER.warning(
                 "[refresh:%s] reCAPTCHA challenge triggered (%s, url=%s)",
                 attempt_id,
-                trigger_reason,
+                formatted_reason,
                 failure_url,
             )
             _record_signal(_SIGNAL_LAST_REFRESH_RESULT, "failed")
@@ -864,23 +981,21 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 _SIGNAL_LAST_REFRESH_FAILURE_CATEGORY,
                 CATEGORY_CAPTCHA_REQUIRED,
             )
-            await hass.services.async_call(
-                "persistent_notification",
-                "create",
-                {
-                    "title": "PSEG Integration: reCAPTCHA Required",
-                    "message": (
-                        "reCAPTCHA challenge was triggered. Try refresh_cookie "
-                        "again — it usually passes after a few attempts."
-                    ),
-                    "notification_id": "psegli_captcha_required",
-                },
-            )
-            if trigger_reason.startswith("captcha_auto_retry_"):
+            if not is_retry_attempt or _should_notify_verbose():
+                await hass.services.async_call(
+                    "persistent_notification",
+                    "create",
+                    {
+                        "title": "PSEG Integration: reCAPTCHA Required",
+                        "message": _captcha_notification_message(trigger_reason),
+                        "notification_id": "psegli_captcha_required",
+                    },
+                )
+            if is_retry_attempt:
                 _LOGGER.info(
                     "[refresh:%s] CAPTCHA still required on %s; continuing current retry loop",
                     attempt_id,
-                    trigger_reason,
+                    formatted_reason,
                 )
             else:
                 await _schedule_captcha_retry(trigger_reason)
@@ -1126,8 +1241,9 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                         i + 1, retry_count, delay_min, trigger_reason,
                     )
                     await asyncio.sleep(delay_min * 60)
+                    retry_reason = f"captcha_auto_retry_{i + 1}:{trigger_reason}"
                     result = await _refresh_cookie_shared(
-                        trigger_reason=f"captcha_auto_retry_{i + 1}",
+                        trigger_reason=retry_reason,
                         notify_on_success=True,
                         notify_on_failure=False,
                     )
@@ -1155,7 +1271,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
 
     # Business logic for updating statistics — called directly by service handler
     # and by internal callers (cookie refresh, scheduler) without the fake Call object.
-    async def _do_update_statistics(
+    async def _do_update_statistics_once(
         hass_ref: HomeAssistant,
         days_back: int = 0,
         trigger_refresh_on_auth_failure: bool = True,
@@ -1204,6 +1320,40 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
             _LOGGER.error("Failed to update statistics: %s", e)
             return False
 
+    async def _do_update_statistics(
+        hass_ref: HomeAssistant,
+        days_back: int = 0,
+        trigger_refresh_on_auth_failure: bool = True,
+    ) -> bool:
+        """Single-flight wrapper so overlapping statistics updates share one task."""
+        in_flight = domain_data.get(_STATISTICS_UPDATE_IN_PROGRESS_TASK)
+        current = asyncio.current_task()
+        if in_flight and not in_flight.done():
+            if in_flight is current:
+                _LOGGER.debug(
+                    "Statistics update requested from active update task; skipping"
+                )
+                return False
+            _LOGGER.debug(
+                "Statistics update already in progress; waiting for result (days_back=%d)",
+                days_back,
+            )
+            return await in_flight
+
+        task = asyncio.create_task(
+            _do_update_statistics_once(
+                hass_ref,
+                days_back=days_back,
+                trigger_refresh_on_auth_failure=trigger_refresh_on_auth_failure,
+            )
+        )
+        domain_data[_STATISTICS_UPDATE_IN_PROGRESS_TASK] = task
+        try:
+            return await task
+        finally:
+            if domain_data.get(_STATISTICS_UPDATE_IN_PROGRESS_TASK) is task:
+                domain_data.pop(_STATISTICS_UPDATE_IN_PROGRESS_TASK, None)
+
     # Service handler delegates to business logic
     async def async_update_statistics_manual(call: Any) -> None:
         """Service handler for psegli.update_statistics."""
@@ -1238,7 +1388,8 @@ async def async_setup_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
     # Register the get_status service (Phase 3.3)
     async def async_get_status(call: Any) -> dict[str, Any]:
         """Return current integration status signals."""
-        return _get_status_signals(domain_data)
+        active_entry = _get_active_entry(hass)
+        return await _build_status_snapshot(hass, active_entry, domain_data)
 
     if not hass.services.has_service(DOMAIN, "get_status"):
         register_kwargs: dict[str, Any] = {}
@@ -1723,6 +1874,20 @@ async def async_unload_entry(hass: HomeAssistant, entry: ConfigEntry) -> bool:
                 except Exception as e:
                     _LOGGER.warning("Error cancelling in-flight refresh task: %s", e)
                 domain_data.pop(_REFRESH_IN_PROGRESS_TASK, None)
+
+            # Cancel any in-flight shared statistics update task.
+            in_flight_stats = domain_data.get(_STATISTICS_UPDATE_IN_PROGRESS_TASK)
+            if in_flight_stats is not None:
+                try:
+                    if not in_flight_stats.done():
+                        in_flight_stats.cancel()
+                        try:
+                            await in_flight_stats
+                        except asyncio.CancelledError:
+                            pass
+                except Exception as e:
+                    _LOGGER.warning("Error cancelling in-flight statistics task: %s", e)
+                domain_data.pop(_STATISTICS_UPDATE_IN_PROGRESS_TASK, None)
 
             # Clear addon connectivity state for a clean next setup.
             domain_data.pop(_SUPERVISOR_DISCOVERED_ADDON_URL, None)

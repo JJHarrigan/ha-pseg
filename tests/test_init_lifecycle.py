@@ -121,3 +121,60 @@ async def test_unload_clears_addon_connectivity_state_for_clean_next_setup() -> 
     assert "_addon_last_failure_url" not in hass.data[DOMAIN]
     assert "_last_addon_unreachable_notification_at" not in hass.data[DOMAIN]
     assert "_last_working_addon_url" not in hass.data[DOMAIN]
+
+
+@pytest.mark.asyncio
+async def test_unload_cancels_pending_captcha_retry_task() -> None:
+    """Last-entry unload should cancel any pending CAPTCHA retry task."""
+    runtime_data = SimpleNamespace(async_shutdown=AsyncMock())
+    active_entry = SimpleNamespace(entry_id="entry_active", runtime_data=runtime_data)
+    retry_task = asyncio.create_task(asyncio.sleep(60))
+
+    hass = SimpleNamespace(
+        data={
+            DOMAIN: {
+                active_entry.entry_id: object(),
+                "_scheduled_task_running": True,
+                "_captcha_retry_task": retry_task,
+            }
+        },
+        config_entries=SimpleNamespace(
+            async_entries=MagicMock(return_value=[active_entry])
+        ),
+        services=SimpleNamespace(async_remove=MagicMock()),
+    )
+
+    result = await psegli_init.async_unload_entry(hass, active_entry)
+
+    assert result is True
+    stored = hass.data[DOMAIN].get("_captcha_retry_task")
+    assert stored is None
+    assert retry_task.cancelled() or retry_task.done()
+
+
+@pytest.mark.asyncio
+async def test_unload_cancels_inflight_statistics_update_task() -> None:
+    """Last-entry unload should cancel any in-flight statistics update task."""
+    runtime_data = SimpleNamespace(async_shutdown=AsyncMock())
+    active_entry = SimpleNamespace(entry_id="entry_active", runtime_data=runtime_data)
+    stats_task = asyncio.create_task(asyncio.sleep(60))
+
+    hass = SimpleNamespace(
+        data={
+            DOMAIN: {
+                active_entry.entry_id: object(),
+                "_scheduled_task_running": True,
+                "_statistics_update_in_progress_task": stats_task,
+            }
+        },
+        config_entries=SimpleNamespace(
+            async_entries=MagicMock(return_value=[active_entry])
+        ),
+        services=SimpleNamespace(async_remove=MagicMock()),
+    )
+
+    result = await psegli_init.async_unload_entry(hass, active_entry)
+
+    assert result is True
+    assert "_statistics_update_in_progress_task" not in hass.data[DOMAIN]
+    assert stats_task.cancelled() or stats_task.done()

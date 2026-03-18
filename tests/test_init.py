@@ -495,6 +495,51 @@ class TestAsyncSetupEntry:
         # Scheduler validity checks should use test_data_path, not test_connection.
         assert mock_client.test_connection.call_count == setup_validation_calls
 
+    @patch("custom_components.psegli._process_chart_data", new_callable=AsyncMock)
+    @patch("custom_components.psegli.PSEGLIClient")
+    @patch("custom_components.psegli.get_fresh_cookies", new_callable=AsyncMock)
+    @patch("custom_components.psegli.check_addon_health", new_callable=AsyncMock)
+    async def test_overlapping_statistics_updates_share_single_inflight_task(
+        self,
+        mock_health,
+        mock_fresh,
+        mock_client_cls,
+        mock_process_chart_data,
+        mock_hass,
+        mock_config_entry,
+    ):
+        """Concurrent statistics updates should not duplicate the same fetch/write path."""
+        mock_health.return_value = True
+        mock_hass.config_entries.async_entries.return_value = [mock_config_entry]
+
+        mock_client = MagicMock()
+        mock_client.cookie = "MM_SID=valid_test_cookie"
+        mock_client.test_connection = MagicMock(return_value=True)
+        mock_client.get_usage_data = MagicMock(return_value={"chart_data": {}})
+        mock_client_cls.return_value = mock_client
+
+        get_usage_calls = 0
+
+        async def _run_executor(func, *args):
+            nonlocal get_usage_calls
+            if func is mock_client.get_usage_data:
+                get_usage_calls += 1
+                await asyncio.sleep(0)
+            return func(*args)
+
+        mock_hass.async_add_executor_job = AsyncMock(side_effect=_run_executor)
+
+        await async_setup_entry(mock_hass, mock_config_entry)
+        update_handler = _get_registered_service_handler(mock_hass, "update_statistics")
+
+        await asyncio.gather(
+            update_handler(MagicMock(data={"days_back": 0})),
+            update_handler(MagicMock(data={"days_back": 0})),
+        )
+
+        assert get_usage_calls == 1
+        mock_process_chart_data.assert_awaited_once()
+
 
 # ---------------------------------------------------------------------------
 # async_unload_entry
@@ -1265,15 +1310,32 @@ class TestSignalTracking:
 
     @patch("custom_components.psegli.PSEGLIClient")
     @patch("custom_components.psegli.get_fresh_cookies", new_callable=AsyncMock)
+    @patch("custom_components.psegli.get_addon_failure_artifacts", new_callable=AsyncMock)
     @patch("custom_components.psegli.check_addon_health", new_callable=AsyncMock)
     async def test_get_status_returns_all_signal_keys(
-        self, mock_health, mock_fresh, mock_client_cls, mock_hass, mock_config_entry
+        self,
+        mock_health,
+        mock_artifacts,
+        mock_fresh,
+        mock_client_cls,
+        mock_hass,
+        mock_config_entry,
     ):
         """get_status handler returns all expected signal fields."""
         mock_client = MagicMock()
         mock_client.test_connection = MagicMock(return_value=True)
         mock_client.cookie = "MM_SID=valid_test_cookie"
         mock_client_cls.return_value = mock_client
+        mock_artifacts.return_value = {
+            "count": 2,
+            "items": [
+                {
+                    "id": "1741286400000",
+                    "created_at": "2026-03-06T12:00:00+00:00",
+                    "category": "transient_site_error",
+                }
+            ],
+        }
 
         await async_setup_entry(mock_hass, mock_config_entry)
 
@@ -1297,11 +1359,46 @@ class TestSignalTracking:
             "addon_transport_failure_count",
             "addon_circuit_open_until",
             "last_working_addon_url",
+            "artifact_count",
+            "artifact_latest_created_at",
+            "artifact_list_endpoint",
         }
         assert set(result.keys()) == expected_keys
         # Cookie age should be computed since we recorded it during setup
         assert result["cookie_age_seconds"] is not None
         assert result["consecutive_auth_failures"] == 0
+        assert result["artifact_count"] == 2
+        assert result["artifact_latest_created_at"] == "2026-03-06T12:00:00+00:00"
+        assert result["artifact_list_endpoint"].endswith("/artifacts/login-failures?limit=10")
+
+    @patch("custom_components.psegli.PSEGLIClient")
+    @patch("custom_components.psegli.get_fresh_cookies", new_callable=AsyncMock)
+    @patch("custom_components.psegli.get_addon_failure_artifacts", new_callable=AsyncMock)
+    @patch("custom_components.psegli.check_addon_health", new_callable=AsyncMock)
+    async def test_get_status_artifact_summary_falls_back_when_endpoint_unavailable(
+        self,
+        mock_health,
+        mock_artifacts,
+        mock_fresh,
+        mock_client_cls,
+        mock_hass,
+        mock_config_entry,
+    ):
+        """get_status tolerates artifact endpoint errors and returns neutral fields."""
+        mock_client = MagicMock()
+        mock_client.test_connection = MagicMock(return_value=True)
+        mock_client.cookie = "MM_SID=valid_test_cookie"
+        mock_client_cls.return_value = mock_client
+        mock_artifacts.return_value = None
+
+        await async_setup_entry(mock_hass, mock_config_entry)
+
+        handler = _get_registered_service_handler(mock_hass, "get_status")
+        result = await handler(MagicMock(data={}))
+
+        assert result["artifact_count"] == 0
+        assert result["artifact_latest_created_at"] is None
+        assert result["artifact_list_endpoint"].endswith("/artifacts/login-failures?limit=10")
 
     @patch("custom_components.psegli.PSEGLIClient")
     @patch("custom_components.psegli.get_fresh_cookies", new_callable=AsyncMock)
@@ -1478,6 +1575,92 @@ class TestSignalTracking:
             first_retry_task.cancel()
             with suppress(asyncio.CancelledError):
                 await first_retry_task
+
+    @patch("custom_components.psegli.PSEGLIClient")
+    @patch("custom_components.psegli.get_fresh_cookies", new_callable=AsyncMock)
+    @patch("custom_components.psegli.check_addon_health", new_callable=AsyncMock)
+    async def test_captcha_auto_retry_preserves_origin_reason_and_suppresses_repeat_notification_in_standard(
+        self, mock_health, mock_fresh, mock_client_cls, mock_hass, mock_config_entry, caplog
+    ):
+        """Standard notifications should only notify once while retry reason keeps origin context."""
+        mock_health.return_value = True
+        mock_fresh.side_effect = [
+            LoginResult(cookies=None, category=CATEGORY_CAPTCHA_REQUIRED),
+            LoginResult(cookies=None, category=CATEGORY_CAPTCHA_REQUIRED),
+        ]
+        mock_client = MagicMock()
+        mock_client.test_connection = MagicMock(return_value=True)
+        mock_client.cookie = "MM_SID=valid_test_cookie"
+        mock_client_cls.return_value = mock_client
+        mock_hass.config_entries.async_entries.return_value = [mock_config_entry]
+        mock_config_entry.options = {
+            CONF_CAPTCHA_AUTO_RETRY_COUNT: 1,
+            CONF_CAPTCHA_AUTO_RETRY_DELAYS_MINUTES: "0",
+        }
+
+        import logging
+
+        with patch("custom_components.psegli.asyncio.sleep", new=AsyncMock(return_value=None)):
+            await async_setup_entry(mock_hass, mock_config_entry)
+            handler = _get_registered_service_handler(mock_hass, "refresh_cookie")
+            with caplog.at_level(logging.INFO):
+                await handler(MagicMock(data={}))
+                retry_task = mock_hass.data[DOMAIN].get(_CAPTCHA_RETRY_TASK)
+                assert retry_task is not None
+                with suppress(asyncio.CancelledError):
+                    await asyncio.wait_for(retry_task, timeout=1)
+
+        captcha_notifications = [
+            call for call in mock_hass.services.async_call.await_args_list
+            if call.args[0] == "persistent_notification"
+            and call.args[1] == "create"
+            and call.args[2].get("notification_id") == "psegli_captcha_required"
+        ]
+        assert len(captcha_notifications) == 1
+        assert mock_hass.data[DOMAIN][_SIGNAL_LAST_REFRESH_REASON] == "captcha_auto_retry_1:manual_service"
+        assert "captcha_auto_retry_1:manual_service" in caplog.text
+
+    @patch("custom_components.psegli.PSEGLIClient")
+    @patch("custom_components.psegli.get_fresh_cookies", new_callable=AsyncMock)
+    @patch("custom_components.psegli.check_addon_health", new_callable=AsyncMock)
+    async def test_captcha_auto_retry_verbose_emits_retry_notification_with_context(
+        self, mock_health, mock_fresh, mock_client_cls, mock_hass, mock_config_entry
+    ):
+        """Verbose notifications include retry-attempt context when CAPTCHA persists."""
+        mock_health.return_value = True
+        mock_fresh.side_effect = [
+            LoginResult(cookies=None, category=CATEGORY_CAPTCHA_REQUIRED),
+            LoginResult(cookies=None, category=CATEGORY_CAPTCHA_REQUIRED),
+        ]
+        mock_client = MagicMock()
+        mock_client.test_connection = MagicMock(return_value=True)
+        mock_client.cookie = "MM_SID=valid_test_cookie"
+        mock_client_cls.return_value = mock_client
+        mock_hass.config_entries.async_entries.return_value = [mock_config_entry]
+        mock_config_entry.options = {
+            CONF_CAPTCHA_AUTO_RETRY_COUNT: 1,
+            CONF_CAPTCHA_AUTO_RETRY_DELAYS_MINUTES: "0",
+            CONF_NOTIFICATION_LEVEL: NOTIFICATION_VERBOSE,
+        }
+
+        with patch("custom_components.psegli.asyncio.sleep", new=AsyncMock(return_value=None)):
+            await async_setup_entry(mock_hass, mock_config_entry)
+            handler = _get_registered_service_handler(mock_hass, "refresh_cookie")
+            await handler(MagicMock(data={}))
+            retry_task = mock_hass.data[DOMAIN].get(_CAPTCHA_RETRY_TASK)
+            assert retry_task is not None
+            with suppress(asyncio.CancelledError):
+                await asyncio.wait_for(retry_task, timeout=1)
+
+        captcha_notifications = [
+            call for call in mock_hass.services.async_call.await_args_list
+            if call.args[0] == "persistent_notification"
+            and call.args[1] == "create"
+            and call.args[2].get("notification_id") == "psegli_captcha_required"
+        ]
+        assert len(captcha_notifications) == 2
+        assert "automatic retry 1" in captcha_notifications[-1].args[2]["message"]
+        assert "manual_service" in captcha_notifications[-1].args[2]["message"]
 
 
 class TestProcessChartDataSignals:
@@ -1827,6 +2010,14 @@ class TestPhaseFIncrementalBackfill:
             _SIGNAL_LAST_SUCCESSFUL_DATAPOINT_AT: datetime.now(tz=timezone.utc) - timedelta(days=90)
         }
         assert _compute_incremental_days_back(domain_data) == 30
+
+    def test_compute_incremental_days_back_uses_utc_elapsed_time_across_dst(self):
+        """DST transitions should use UTC elapsed time semantics, not wall-clock days."""
+        domain_data = {
+            _SIGNAL_LAST_SUCCESSFUL_DATAPOINT_AT: datetime(2026, 3, 8, 5, 30, tzinfo=timezone.utc)
+        }
+        now = datetime(2026, 3, 9, 4, 30, tzinfo=timezone.utc)
+        assert _compute_incremental_days_back(domain_data, now=now) == 0
 
 
 # ---------------------------------------------------------------------------
