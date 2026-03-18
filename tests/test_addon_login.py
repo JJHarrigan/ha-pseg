@@ -10,7 +10,15 @@ import pytest
 # Add the addon directory to path so we can import from it
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "addons", "psegli-automation"))
 
-from auto_login import PSEGAutoLogin, LoginResult, get_fresh_cookies
+from auto_login import (
+    CATEGORY_TRANSIENT_SITE_ERROR,
+    CATEGORY_UNKNOWN_RUNTIME_ERROR,
+    FreshCookieResult,
+    PSEGAutoLogin,
+    LoginResult,
+    _is_transient_site_error_message,
+    get_fresh_cookies,
+)
 from artifacts import prune_login_failure_artifacts
 
 
@@ -317,6 +325,55 @@ class TestPSEGAutoLogin:
             MockLogin.assert_called_once_with(
                 email="user", password="pass", headless=True
             )
+
+    def test_transient_site_error_classifier_matches_expected_strings(self):
+        """Transient classifier should recognize timeout/upstream availability patterns."""
+        assert _is_transient_site_error_message("Gateway timeout from upstream")
+        assert _is_transient_site_error_message("503 Service Unavailable")
+        assert _is_transient_site_error_message("operation timed out")
+        assert not _is_transient_site_error_message("Invalid credentials")
+        assert not _is_transient_site_error_message("")
+        assert not _is_transient_site_error_message(None)
+
+    @pytest.mark.asyncio
+    async def test_get_fresh_cookies_returns_structured_site_flow_changed_details(self):
+        """Structured addon result should preserve unknown_runtime_error + site_flow_changed."""
+        with patch("auto_login.PSEGAutoLogin") as MockLogin:
+            instance = MockLogin.return_value
+            instance.get_cookies = AsyncMock(return_value=None)
+            instance.last_failure_category = CATEGORY_UNKNOWN_RUNTIME_ERROR
+            instance.last_failure_subreason = "site_flow_changed"
+            instance.last_failure_error = "Login failed — still on login page"
+
+            result = await get_fresh_cookies(
+                username="user",
+                password="pass",
+                include_failure_details=True,
+            )
+
+        assert isinstance(result, FreshCookieResult)
+        assert result.category == CATEGORY_UNKNOWN_RUNTIME_ERROR
+        assert result.subreason == "site_flow_changed"
+
+    @pytest.mark.asyncio
+    async def test_get_fresh_cookies_returns_structured_transient_failure_details(self):
+        """Structured addon result should preserve transient_site_error categorization."""
+        with patch("auto_login.PSEGAutoLogin") as MockLogin:
+            instance = MockLogin.return_value
+            instance.get_cookies = AsyncMock(return_value=None)
+            instance.last_failure_category = CATEGORY_TRANSIENT_SITE_ERROR
+            instance.last_failure_subreason = None
+            instance.last_failure_error = "503 Service Unavailable"
+
+            result = await get_fresh_cookies(
+                username="user",
+                password="pass",
+                include_failure_details=True,
+            )
+
+        assert isinstance(result, FreshCookieResult)
+        assert result.category == CATEGORY_TRANSIENT_SITE_ERROR
+        assert result.error == "503 Service Unavailable"
 
     @pytest.mark.asyncio
     async def test_setup_browser_rotates_profile_on_launch_failure(self, mock_playwright, tmp_path):

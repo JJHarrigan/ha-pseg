@@ -37,6 +37,8 @@ _KNOWN_CATEGORIES = {
 }
 
 _TRANSIENT_ERROR_MARKERS = (
+    # Keep this list aligned with the add-on copy in
+    # addons/psegli-automation/auto_login.py. The two runtimes do not share code.
     "timeout",
     "timed out",
     "temporarily unavailable",

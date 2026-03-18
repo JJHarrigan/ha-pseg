@@ -123,6 +123,38 @@ class TestAttemptLogin:
         assert result.cookies is None
         assert result.category == CATEGORY_UNKNOWN_ERROR
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize(
+        ("payload", "expected_category"),
+        [
+            ({"success": True, "cookies": "MM_SID=abc"}, None),
+            ({"success": False, "captcha_required": True}, CATEGORY_CAPTCHA_REQUIRED),
+            (
+                {"success": False, "category": "invalid_credentials", "error": "Invalid credentials"},
+                CATEGORY_INVALID_CREDENTIALS,
+            ),
+            (
+                {"success": False, "category": "transient_site_error", "error": "503 upstream"},
+                CATEGORY_TRANSIENT_SITE_ERROR,
+            ),
+            (
+                {"success": False, "category": "unknown_runtime_error", "subreason": "site_flow_changed"},
+                CATEGORY_UNKNOWN_ERROR,
+            ),
+            (
+                {"success": False, "category": "not_a_real_category", "error": "weird"},
+                CATEGORY_UNKNOWN_ERROR,
+            ),
+        ],
+    )
+    async def test_addon_response_maps_to_exactly_one_category(self, payload, expected_category):
+        """Canonical addon response shapes should map to one deterministic category."""
+        resp = _mock_response(200, payload)
+        result = await _attempt_login(_mock_session(resp), {"username": "u", "password": "p"})
+        assert isinstance(result, LoginResult)
+        assert result.cookies == payload.get("cookies")
+        assert result.category == expected_category
+
 
 class TestGetFreshCookiesRetry:
     """Tests for transport-failure retry behavior in get_fresh_cookies."""
@@ -187,7 +219,7 @@ class TestGetFreshCookiesRetry:
         assert result.category == CATEGORY_ADDON_DISCONNECT
         assert mock_attempt.call_count == _MAX_LOGIN_RETRIES
         assert mock_sleep.call_count == _MAX_LOGIN_RETRIES - 1
-        assert result.addon_url is None
+        assert result.addon_url == "http://84ee8c30_psegli-automation:8000"
 
     @pytest.mark.asyncio
     @patch("custom_components.psegli.auto_login._attempt_login", new_callable=AsyncMock)

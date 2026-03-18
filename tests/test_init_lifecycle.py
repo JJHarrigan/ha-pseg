@@ -85,3 +85,39 @@ async def test_unload_keeps_scheduler_when_another_loaded_entry_exists() -> None
     long_task.cancel()
     with pytest.raises(asyncio.CancelledError):
         await long_task
+
+
+@pytest.mark.asyncio
+async def test_unload_clears_addon_connectivity_state_for_clean_next_setup() -> None:
+    """Last-entry unload should clear connectivity and circuit-breaker state."""
+    runtime_data = SimpleNamespace(async_shutdown=AsyncMock())
+    active_entry = SimpleNamespace(entry_id="entry_active", runtime_data=runtime_data)
+
+    hass = SimpleNamespace(
+        data={
+            DOMAIN: {
+                active_entry.entry_id: object(),
+                "_scheduled_task_running": True,
+                "_addon_transport_failure_count": 3,
+                "_addon_circuit_open_until": object(),
+                "_addon_circuit_open_for_url": "http://addon.example:8000",
+                "_addon_last_failure_url": "http://addon.example:8000",
+                "_last_addon_unreachable_notification_at": object(),
+                "_last_working_addon_url": "http://working-addon:8000",
+            }
+        },
+        config_entries=SimpleNamespace(
+            async_entries=MagicMock(return_value=[active_entry])
+        ),
+        services=SimpleNamespace(async_remove=MagicMock()),
+    )
+
+    result = await psegli_init.async_unload_entry(hass, active_entry)
+
+    assert result is True
+    assert "_addon_transport_failure_count" not in hass.data[DOMAIN]
+    assert "_addon_circuit_open_until" not in hass.data[DOMAIN]
+    assert "_addon_circuit_open_for_url" not in hass.data[DOMAIN]
+    assert "_addon_last_failure_url" not in hass.data[DOMAIN]
+    assert "_last_addon_unreachable_notification_at" not in hass.data[DOMAIN]
+    assert "_last_working_addon_url" not in hass.data[DOMAIN]

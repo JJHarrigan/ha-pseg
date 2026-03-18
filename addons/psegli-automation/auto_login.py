@@ -61,6 +61,8 @@ CATEGORY_TRANSIENT_SITE_ERROR = "transient_site_error"
 CATEGORY_UNKNOWN_RUNTIME_ERROR = "unknown_runtime_error"
 
 _TRANSIENT_ERROR_MARKERS = (
+    # Keep this list aligned with the integration copy in
+    # custom_components/psegli/auto_login.py. The two runtimes do not share code.
     "timeout",
     "timed out",
     "temporarily unavailable",
