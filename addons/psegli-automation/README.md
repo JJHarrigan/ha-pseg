@@ -104,12 +104,88 @@ reCAPTCHA challenges usually stop appearing after a few successful logins with t
 - **Network Issues**: Verify addon can reach PSEG website
 - **reCAPTCHA**: If login fails with `captcha_required`, retry — the persistent profile builds trust over time
 
+### Failure Category Remediation
+
+When login fails, the add-on returns a `category` field indicating the type of failure. Use this matrix to determine the correct remediation:
+
+| Category | Meaning | Remediation |
+|----------|---------|-------------|
+| `invalid_credentials` | Username/password rejected by PSEG site | Verify credentials in integration config; re-enter if changed |
+| `captcha_required` | reCAPTCHA challenge triggered | Retry automatically (integration has auto-retry); persistent profile builds trust over time |
+| `addon_disconnect` | Transport disconnected mid-login | Check add-on logs; verify network stability; retry |
+| `addon_unreachable` | Cannot reach add-on endpoint | Verify add-on is running; check `addon_url` in integration options; check port 8000 |
+| `transient_site_error` | Upstream PSEG site returned 5xx or transient error | Wait and retry; do NOT treat as auth failure; site will recover |
+| `unknown_runtime_error` | Unexpected failure (fallback) | Check add-on logs for details; enable debug logging temporarily |
+
+### Retrieving Login Failure Artifacts
+
+The add-on persists failure artifacts (HTML snapshots, screenshots) under `/data/login_failures/` for post-mortem analysis. To list recent artifacts:
+
+```
+GET /artifacts/login-failures?limit=10
+```
+
+Response contains metadata only (no raw HTML/screenshot bytes):
+
+```json
+{
+  "count": 2,
+  "items": [
+    {
+      "id": "1741200000000",
+      "created_at": "2026-03-05T20:00:00+00:00",
+      "category": "unknown_runtime_error",
+      "subreason": "site_flow_changed",
+      "url": "https://mysmartenergy.psegliny.com/",
+      "title": "MySmartEnergy",
+      "recaptcha_iframe": false,
+      "html_file": "1741200000000/page.html",
+      "screenshot_file": "1741200000000/page.png"
+    }
+  ]
+}
+```
+
+Retention: latest 10 artifacts are kept; older ones are pruned on startup and after each new artifact write.
+
+### Post-Stabilization Debug Disable
+
+After debugging is complete, reduce log volume:
+
+1. **Manual:** Set `debug: false` in add-on configuration and restart.
+2. **Automatic:** Set `debug_auto_disable_hours` to a non-zero value (e.g., `24`). Debug logging will revert to INFO after the specified hours — no restart needed. Check status via `GET /debug-status`.
+
 ### Debug Logging Toggle
 
 Addon options include a `debug` boolean:
 
 - `debug: false` (default) keeps normal log volume.
 - `debug: true` enables verbose add-on logging for troubleshooting.
+
+### Debug Auto-Disable
+
+To prevent runaway log volume, the add-on supports automatic debug disabling:
+
+- `debug_auto_disable_hours: 0` (default) — auto-disable is off; debug stays on until manually toggled.
+- `debug_auto_disable_hours: 24` — debug logging automatically reverts to INFO after 24 hours.
+
+The auto-disable state is persisted under `/data/debug_state.json` and survives add-on restarts. When the timer expires, the log level is changed at runtime via `setLevel()` — no restart required.
+
+To check current debug state programmatically:
+
+```
+GET /debug-status
+```
+
+Returns:
+```json
+{
+  "debug_enabled": true,
+  "auto_disable_hours": 24,
+  "debug_enabled_at": 1741200000.0,
+  "auto_disable_at": 1741286400.0
+}
+```
 
 ## Development
 

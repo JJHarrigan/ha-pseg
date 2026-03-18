@@ -23,5 +23,7 @@ homeassistant_api_filter:
   - "psegli"
 options:
   debug: false
+  debug_auto_disable_hours: 0
 schema:
   debug: bool
+  debug_auto_disable_hours: "int(0,168)?"

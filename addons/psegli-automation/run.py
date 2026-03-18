@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import os
+import time
 from typing import Optional
 
 import uvicorn
@@ -46,10 +47,118 @@ def _load_debug_enabled() -> bool:
         return False
 
 
+DEBUG_STATE_PATH = "/data/debug_state.json"
+
+
+def _load_auto_disable_hours() -> int:
+    """Load debug_auto_disable_hours from env or addon options file."""
+    env_value = os.environ.get("DEBUG_AUTO_DISABLE_HOURS")
+    if env_value is not None:
+        try:
+            return max(0, int(env_value))
+        except ValueError:
+            return 0
+
+    options_path = "/data/options.json"
+    try:
+        with open(options_path, "r", encoding="utf-8") as f:
+            options = json.load(f)
+        return max(0, int(options.get("debug_auto_disable_hours", 0)))
+    except (FileNotFoundError, ValueError, TypeError):
+        return 0
+
+
+def _load_debug_state() -> dict:
+    """Load persisted debug state from /data."""
+    try:
+        with open(DEBUG_STATE_PATH, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError, OSError):
+        return {
+            "debug_enabled": False,
+            "debug_enabled_at": None,
+            "auto_disable_hours": 0,
+        }
+
+
+def _save_debug_state(state: dict) -> None:
+    """Persist debug state to /data."""
+    try:
+        with open(DEBUG_STATE_PATH, "w", encoding="utf-8") as f:
+            json.dump(state, f)
+    except OSError:
+        pass  # Non-fatal: /data may not exist in dev/test environments
+
+
+def _check_auto_disable() -> bool:
+    """Check if debug should be auto-disabled based on elapsed time.
+
+    Returns True if auto-disable fired (debug was turned off).
+    """
+    state = _load_debug_state()
+    if not state.get("debug_enabled"):
+        return False
+
+    auto_hours = state.get("auto_disable_hours", 0)
+    if auto_hours <= 0:
+        return False
+
+    enabled_at = state.get("debug_enabled_at")
+    if enabled_at is None:
+        return False
+
+    elapsed_hours = (time.time() - enabled_at) / 3600
+    if elapsed_hours >= auto_hours:
+        # Auto-disable: flip state and lower log level at runtime
+        state["debug_enabled"] = False
+        _save_debug_state(state)
+
+        root_logger = logging.getLogger()
+        root_logger.setLevel(logging.INFO)
+        for handler in root_logger.handlers:
+            handler.setLevel(logging.INFO)
+        logging.getLogger(__name__).info(
+            "Debug auto-disabled after %.1f hours (threshold: %d hours)",
+            elapsed_hours,
+            auto_hours,
+        )
+        return True
+
+    return False
+
+
 DEBUG_ENABLED = _load_debug_enabled()
+_AUTO_DISABLE_HOURS = _load_auto_disable_hours()
 LOG_LEVEL = logging.DEBUG if DEBUG_ENABLED else logging.INFO
 logging.basicConfig(level=LOG_LEVEL)
 logger = logging.getLogger(__name__)
+
+# Initialize persisted debug state on startup
+if DEBUG_ENABLED:
+    _existing_state = _load_debug_state()
+    if not _existing_state.get("debug_enabled"):
+        # Debug was just turned on — record the timestamp
+        _save_debug_state({
+            "debug_enabled": True,
+            "debug_enabled_at": time.time(),
+            "auto_disable_hours": _AUTO_DISABLE_HOURS,
+        })
+    else:
+        # Debug was already on — update auto_disable_hours if changed
+        if _existing_state.get("auto_disable_hours") != _AUTO_DISABLE_HOURS:
+            _existing_state["auto_disable_hours"] = _AUTO_DISABLE_HOURS
+            _save_debug_state(_existing_state)
+    # Check if auto-disable should fire immediately (e.g., after restart)
+    _check_auto_disable()
+else:
+    # Debug is off — clear any persisted debug-enabled state
+    _existing_state = _load_debug_state()
+    if _existing_state.get("debug_enabled"):
+        _save_debug_state({
+            "debug_enabled": False,
+            "debug_enabled_at": _existing_state.get("debug_enabled_at"),
+            "auto_disable_hours": _AUTO_DISABLE_HOURS,
+        })
 
 app = FastAPI(title="PSEG Long Island Automation", version="2.5.1.3")
 
@@ -88,6 +197,41 @@ async def health_check():
 async def startup_maintenance():
     """Apply retention pruning on startup."""
     await asyncio.to_thread(prune_login_failure_artifacts)
+    # Start periodic debug auto-disable checker
+    if _AUTO_DISABLE_HOURS > 0 and DEBUG_ENABLED:
+        asyncio.create_task(_periodic_auto_disable_check())
+
+
+async def _periodic_auto_disable_check():
+    """Background task: check auto-disable every 5 minutes."""
+    while True:
+        await asyncio.sleep(300)  # 5-minute interval
+        try:
+            fired = await asyncio.to_thread(_check_auto_disable)
+            if fired:
+                logger.info("Debug auto-disable check completed — debug logging disabled")
+                break  # No need to keep checking once disabled
+        except Exception as e:
+            logger.warning("Debug auto-disable check error: %s", e)
+
+
+@app.get("/debug-status")
+async def debug_status():
+    """Return current debug lifecycle state."""
+    state = _load_debug_state()
+    enabled_at = state.get("debug_enabled_at")
+    auto_hours = state.get("auto_disable_hours", 0)
+
+    auto_disable_at = None
+    if enabled_at and auto_hours and auto_hours > 0:
+        auto_disable_at = enabled_at + (auto_hours * 3600)
+
+    return {
+        "debug_enabled": state.get("debug_enabled", False),
+        "auto_disable_hours": auto_hours,
+        "debug_enabled_at": enabled_at,
+        "auto_disable_at": auto_disable_at,
+    }
 
 
 @app.get("/profile-status")

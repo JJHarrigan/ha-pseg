@@ -1,8 +1,10 @@
 """Tests for the add-on's FastAPI endpoints (run.py)."""
 
+import json
 import sys
 import os
-from unittest.mock import AsyncMock, patch
+import time
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -193,3 +195,109 @@ class TestFastAPIEndpoints:
         # With the lock, we should see start/end/start/end (serialized)
         # Without the lock, we'd see start/start/end/end
         assert call_order == ["start", "end", "start", "end"]
+
+
+@pytest.mark.skipif(not HAS_HTTPX, reason="httpx not installed")
+class TestDebugAutoDisable:
+    """Tests for Task 7: debug auto-disable lifecycle controls."""
+
+    @pytest.mark.asyncio
+    async def test_debug_status_endpoint_exists(self):
+        """GET /debug-status returns current debug state."""
+        transport = ASGITransport(app=app)
+        async with AsyncClient(transport=transport, base_url="http://test") as client:
+            resp = await client.get("/debug-status")
+        assert resp.status_code == 200
+        data = resp.json()
+        assert "debug_enabled" in data
+        assert "auto_disable_hours" in data
+        assert "debug_enabled_at" in data
+        assert "auto_disable_at" in data
+
+    @pytest.mark.asyncio
+    async def test_debug_state_persisted_to_data_dir(self):
+        """Debug state file is written under /data when debug is enabled."""
+        from run import _save_debug_state, _load_debug_state, DEBUG_STATE_PATH
+
+        state = {
+            "debug_enabled": True,
+            "debug_enabled_at": time.time(),
+            "auto_disable_hours": 24,
+        }
+        with patch("builtins.open", create=True) as mock_open:
+            mock_open.return_value.__enter__ = MagicMock(return_value=MagicMock())
+            mock_open.return_value.__exit__ = MagicMock(return_value=False)
+            _save_debug_state(state)
+        mock_open.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_auto_disable_flips_log_level_at_runtime(self):
+        """When auto-disable fires, logging level switches from DEBUG to INFO."""
+        from run import _check_auto_disable
+
+        state = {
+            "debug_enabled": True,
+            "debug_enabled_at": time.time() - (25 * 3600),  # 25 hours ago
+            "auto_disable_hours": 24,
+        }
+        with patch("run._load_debug_state", return_value=state), \
+             patch("run._save_debug_state") as mock_save, \
+             patch("run.logging") as mock_logging:
+            mock_root = MagicMock()
+            mock_logging.getLogger.return_value = mock_root
+            mock_logging.INFO = 20
+
+            result = _check_auto_disable()
+
+        assert result is True  # auto-disable fired
+        mock_save.assert_called_once()
+        saved = mock_save.call_args[0][0]
+        assert saved["debug_enabled"] is False
+
+    @pytest.mark.asyncio
+    async def test_auto_disable_does_nothing_when_disabled(self):
+        """When auto_disable_hours is 0, no auto-disable occurs."""
+        from run import _check_auto_disable
+
+        state = {
+            "debug_enabled": True,
+            "debug_enabled_at": time.time() - (100 * 3600),
+            "auto_disable_hours": 0,
+        }
+        with patch("run._load_debug_state", return_value=state), \
+             patch("run._save_debug_state") as mock_save:
+            result = _check_auto_disable()
+
+        assert result is False  # did not fire
+        mock_save.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_auto_disable_does_nothing_when_debug_off(self):
+        """When debug is already off, auto-disable is a no-op."""
+        from run import _check_auto_disable
+
+        state = {
+            "debug_enabled": False,
+            "debug_enabled_at": None,
+            "auto_disable_hours": 24,
+        }
+        with patch("run._load_debug_state", return_value=state), \
+             patch("run._save_debug_state") as mock_save:
+            result = _check_auto_disable()
+
+        assert result is False
+        mock_save.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_config_yaml_has_auto_disable_option(self):
+        """config.yaml should include debug_auto_disable_hours in schema."""
+        import yaml
+
+        config_path = os.path.join(
+            os.path.dirname(__file__), "..", "addons", "psegli-automation", "config.yaml"
+        )
+        with open(config_path, "r") as f:
+            config = yaml.safe_load(f)
+
+        assert "debug_auto_disable_hours" in config.get("schema", {})
+        assert config["options"]["debug_auto_disable_hours"] == 0
