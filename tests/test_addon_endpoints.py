@@ -62,7 +62,7 @@ class TestFastAPIEndpoints:
                     "created_at": "2026-03-06T00:00:00+00:00",
                     "category": "unknown_runtime_error",
                     "subreason": "site_flow_changed",
-                    "url": "https://mysmartenergy.psegliny.com/",
+                    "url": "https://mysmartenergy.nj.pseg.com/",
                     "title": "MySmartEnergy",
                     "recaptcha_iframe": False,
                     "html_file": "1773000000000/page.html",

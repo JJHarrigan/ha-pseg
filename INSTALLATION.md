@@ -96,7 +96,7 @@ Old model:
 - Multi-step path through myaccount/Okta/MFA
 
 Current model:
-- Direct login to `mysmartenergy.psegliny.com` via add-on browser automation
+- Direct login to `mysmartenergy.nj.pseg.com` via add-on browser automation
 - Cookie string is the runtime auth token used by the integration
 - No MFA submission service (`enter_mfa_code`) in current architecture
 
@@ -115,17 +115,17 @@ Caveats:
 
 ### How To Get a Manual Cookie (Exact Steps)
 
-1. Open `https://mysmartenergy.psegliny.com/Dashboard` in a normal desktop browser.
+1. Open `https://mysmartenergy.nj.pseg.com/Dashboard` in a normal desktop browser.
 2. Sign in fully with your PSEG credentials.
 3. Open browser developer tools:
 - Chrome/Edge: `Cmd+Option+I` (Mac) or `F12` (Windows/Linux)
 - Firefox: `Cmd+Option+I` (Mac) or `F12`
 - Safari: enable Developer menu, then `Develop -> Show Web Inspector`
-4. Open cookie storage for `https://mysmartenergy.psegliny.com`:
-- Chrome/Edge: `Application -> Storage -> Cookies -> https://mysmartenergy.psegliny.com`
+4. Open cookie storage for `https://mysmartenergy.nj.pseg.com`:
+- Chrome/Edge: `Application -> Storage -> Cookies -> https://mysmartenergy.nj.pseg.com`
   (if `Application` tab is hidden, click `>>`)
-- Firefox: `Storage -> Cookies -> https://mysmartenergy.psegliny.com`
-- Safari: `Storage -> Cookies -> mysmartenergy.psegliny.com`
+- Firefox: `Storage -> Cookies -> https://mysmartenergy.nj.pseg.com`
+- Safari: `Storage -> Cookies -> mysmartenergy.nj.pseg.com`
 5. Copy values for both cookies:
 - `MM_SID`
 - `__RequestVerificationToken`

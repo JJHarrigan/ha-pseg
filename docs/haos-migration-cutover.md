@@ -16,7 +16,7 @@ UI notes:
 ## What Changed (Critical)
 
 The authentication path changed from the old multi-hop flow to direct login at:
-- `https://mysmartenergy.psegliny.com/Dashboard`
+- `https://mysmartenergy.nj.pseg.com/Dashboard`
 
 Key operational changes:
 - `enter_mfa_code` service is removed
@@ -294,8 +294,8 @@ Use if Path A repeatedly fails.
 
 Action:
 1. In a normal desktop browser, log in to:
-   - `https://mysmartenergy.psegliny.com/Dashboard`
-2. Open browser dev tools -> Application/Storage -> Cookies for `mysmartenergy.psegliny.com`
+   - `https://mysmartenergy.nj.pseg.com/Dashboard`
+2. Open browser dev tools -> Application/Storage -> Cookies for `mysmartenergy.nj.pseg.com`
 3. Copy values for:
    - `MM_SID`
    - `__RequestVerificationToken`

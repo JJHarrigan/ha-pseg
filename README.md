@@ -7,7 +7,7 @@ Home Assistant custom integration for PSEG Long Island usage data, with an autom
 This project now has two components:
 
 1. `addons/psegli-automation/` (FastAPI + Playwright)
-- Logs in directly to `https://mysmartenergy.psegliny.com/Dashboard`
+- Logs in directly to `https://mysmartenergy.nj.pseg.com/Dashboard`
 - Handles reCAPTCHA with `playwright-stealth` + persistent browser profile
 - Returns cookie string (`MM_SID` + `__RequestVerificationToken`)
 
@@ -22,7 +22,7 @@ This project now has two components:
 The old flow used a multi-hop login path (PSEG site -> myaccount -> Okta/MFA -> redirect).
 That flow was fragile and caused repeated setup/runtime failures.
 
-The new flow (Phase 1 of the overhaul) logs in directly on `mysmartenergy.psegliny.com`, where practical testing showed no separate Okta MFA step is required for this path.
+The new flow (Phase 1 of the overhaul) logs in directly on `mysmartenergy.nj.pseg.com`, where practical testing showed no separate Okta MFA step is required for this path.
 
 What this means operationally:
 - No `enter_mfa_code` service

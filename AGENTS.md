@@ -6,7 +6,7 @@ Guidance for AI coding agents working in this repository.
 
 PSEG Long Island energy usage integration for Home Assistant. Two components:
 
-1. **Add-on** (`addons/psegli-automation/`) — FastAPI + Playwright browser automation. Logs in to `mysmartenergy.psegliny.com`, returns session cookies.
+1. **Add-on** (`addons/psegli-automation/`) — FastAPI + Playwright browser automation. Logs in to `mysmartenergy.nj.pseg.com`, returns session cookies.
 2. **Integration** (`custom_components/psegli/`) — HA custom component. Uses cookies to fetch energy data, writes HA long-term statistics.
 
 ## Commands

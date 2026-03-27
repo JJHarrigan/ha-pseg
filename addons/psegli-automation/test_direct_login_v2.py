@@ -54,9 +54,9 @@ async def test_direct_login(email: str, password: str):
 
     try:
         # Step 1: Navigate to mysmartenergy
-        print("Navigating to mysmartenergy.psegliny.com/Dashboard ...")
+        print("Navigating to mysmartenergy.nj.pseg.com/Dashboard ...")
         await page.goto(
-            "https://mysmartenergy.psegliny.com/Dashboard",
+            "https://mysmartenergy.nj.pseg.com/Dashboard",
             wait_until="domcontentloaded",
         )
         await asyncio.sleep(2)
@@ -108,7 +108,7 @@ async def test_direct_login(email: str, password: str):
             await asyncio.sleep(1)
             if login_response_data:
                 break
-            if "/Dashboard" in page.url and page.url != "https://mysmartenergy.psegliny.com/":
+            if "/Dashboard" in page.url and page.url != "https://mysmartenergy.nj.pseg.com/":
                 print(f"  Redirected to: {page.url}")
                 break
 

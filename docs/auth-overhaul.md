@@ -22,7 +22,7 @@ Primary implementation plan and review trail:
 ### After (current)
 
 - Add-on logs in directly to:
-  - `https://mysmartenergy.psegliny.com/Dashboard`
+  - `https://mysmartenergy.nj.pseg.com/Dashboard`
 - Runtime auth token remains cookie-based:
   - `MM_SID`
   - `__RequestVerificationToken`

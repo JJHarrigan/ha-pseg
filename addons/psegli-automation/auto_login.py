@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-PSEG Long Island Auto Login — Direct mysmartenergy.psegliny.com login.
+PSEG Long Island Auto Login — Direct mysmartenergy.nj.pseg.com login.
 
 Uses Playwright with stealth patches to log in directly to the mysmartenergy
 portal, bypassing the myaccount/Okta/MFA chain entirely. The mysmartenergy
@@ -52,7 +52,7 @@ def get_effective_profile_dir(profile_dir: Optional[str] = None) -> str:
     return DEFAULT_PROFILE_DIR
 
 # URLs
-LOGIN_URL = "https://mysmartenergy.psegliny.com/Dashboard"
+LOGIN_URL = "https://mysmartenergy.nj.pseg.com/Dashboard"
 LOGIN_API_PATH = "/Home/Login"
 CAPTCHA_REQUIRED_SENTINEL = "CAPTCHA_REQUIRED"
 CATEGORY_CAPTCHA_REQUIRED = "captcha_required"
@@ -103,7 +103,7 @@ def _is_transient_site_error_message(message: str | None) -> bool:
 
 
 class PSEGAutoLogin:
-    """PSEG Long Island login via mysmartenergy.psegliny.com."""
+    """PSEG Long Island login via mysmartenergy.nj.pseg.com."""
 
     def __init__(
         self,

@@ -30,7 +30,7 @@ def mock_playwright():
     page = AsyncMock()
 
     # Set up page defaults
-    page.url = "https://mysmartenergy.psegliny.com/Dashboard"
+    page.url = "https://mysmartenergy.nj.pseg.com/Dashboard"
     page.query_selector = AsyncMock(return_value=None)  # No login form = already authenticated
     page.goto = AsyncMock()
     page.fill = AsyncMock()
@@ -89,7 +89,7 @@ class TestPSEGAutoLogin:
 
     @pytest.mark.asyncio
     async def test_navigates_to_mysmartenergy(self, mock_playwright):
-        """Verify login navigates to mysmartenergy.psegliny.com/Dashboard."""
+        """Verify login navigates to mysmartenergy.nj.pseg.com/Dashboard."""
         pw, context, page = mock_playwright
         login = _make_login_instance()
 
@@ -104,7 +104,7 @@ class TestPSEGAutoLogin:
 
         page.goto.assert_called_once()
         call_url = page.goto.call_args[0][0]
-        assert "mysmartenergy.psegliny.com/Dashboard" in call_url
+        assert "mysmartenergy.nj.pseg.com/Dashboard" in call_url
 
     @pytest.mark.asyncio
     async def test_no_brave_search_url(self):
@@ -223,7 +223,7 @@ class TestPSEGAutoLogin:
                     # On the first sleep after click, fire the response handler
                     if response_handler:
                         mock_response = AsyncMock()
-                        mock_response.url = "https://mysmartenergy.psegliny.com/Home/Login"
+                        mock_response.url = "https://mysmartenergy.nj.pseg.com/Home/Login"
                         mock_response.request.method = "POST"
                         mock_response.json = AsyncMock(return_value={
                             "Data": {"LoginErrorMessage": "Captcha validation failed"}
@@ -496,7 +496,7 @@ class TestPSEGAutoLogin:
         """Failure artifacts should be written under /data/login_failures, not /tmp."""
         login = _make_login_instance()
         login.page = AsyncMock()
-        login.page.url = "https://mysmartenergy.psegliny.com/"
+        login.page.url = "https://mysmartenergy.nj.pseg.com/"
         login.page.title = AsyncMock(return_value="MySmartEnergy")
         login.page.query_selector = AsyncMock(return_value=None)
         login.page.content = AsyncMock(return_value="<html>failure</html>")
@@ -514,7 +514,7 @@ class TestPSEGAutoLogin:
         """Artifact retention pruning should run after writing a failure artifact."""
         login = _make_login_instance()
         login.page = AsyncMock()
-        login.page.url = "https://mysmartenergy.psegliny.com/"
+        login.page.url = "https://mysmartenergy.nj.pseg.com/"
         login.page.title = AsyncMock(return_value="MySmartEnergy")
         login.page.query_selector = AsyncMock(return_value=None)
         login.page.content = AsyncMock(return_value="<html>failure</html>")
@@ -532,7 +532,7 @@ class TestPSEGAutoLogin:
         """Artifact write failures should not raise and should keep login flow alive."""
         login = _make_login_instance()
         login.page = AsyncMock()
-        login.page.url = "https://mysmartenergy.psegliny.com/"
+        login.page.url = "https://mysmartenergy.nj.pseg.com/"
         login.page.title = AsyncMock(return_value="MySmartEnergy")
         login.page.query_selector = AsyncMock(return_value=None)
         login.page.content = AsyncMock(return_value="<html>failure</html>")

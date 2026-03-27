@@ -46,16 +46,16 @@ Rules:
 
 ## Fallback A: Browser Cookie Extraction
 
-1. Open `https://mysmartenergy.psegliny.com/Dashboard` in a desktop browser.
+1. Open `https://mysmartenergy.nj.pseg.com/Dashboard` in a desktop browser.
 2. Sign in fully.
 3. Open developer tools:
 - Chrome/Edge: `Cmd+Option+I` (Mac) or `F12`
 - Firefox: `Cmd+Option+I` (Mac) or `F12`
 - Safari: enable Developer menu, then `Develop -> Show Web Inspector`
 4. Open site cookies:
-- Chrome/Edge: `Application -> Storage -> Cookies -> https://mysmartenergy.psegliny.com`
-- Firefox: `Storage -> Cookies -> https://mysmartenergy.psegliny.com`
-- Safari: `Storage -> Cookies -> mysmartenergy.psegliny.com`
+- Chrome/Edge: `Application -> Storage -> Cookies -> https://mysmartenergy.nj.pseg.com`
+- Firefox: `Storage -> Cookies -> https://mysmartenergy.nj.pseg.com`
+- Safari: `Storage -> Cookies -> mysmartenergy.nj.pseg.com`
 5. Copy `MM_SID` and `__RequestVerificationToken`.
 6. Build the cookie string using the required format above.
 

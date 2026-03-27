@@ -29,7 +29,7 @@ class PSEGLIClient:
         self.session = requests.Session()
         self.session.headers.update({
             "Cookie": cookie,
-            "Referer": "https://mysmartenergy.psegliny.com/Dashboard",
+            "Referer": "https://mysmartenergy.nj.pseg.com/Dashboard",
             "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/138.0.0.0 Safari/537.36",
             "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
             "Accept-Encoding": "gzip, deflate, br, zstd",
@@ -59,7 +59,7 @@ class PSEGLIClient:
         """
         try:
             response = self.session.get(
-                "https://mysmartenergy.psegliny.com/Dashboard",
+                "https://mysmartenergy.nj.pseg.com/Dashboard",
                 timeout=REQUEST_TIMEOUT,
             )
             response.raise_for_status()
@@ -104,7 +104,7 @@ class PSEGLIClient:
     def _get_dashboard_page(self) -> tuple[str, str]:
         """Get the Dashboard page and extract RequestVerificationToken."""
         dashboard_response = self.session.get(
-            "https://mysmartenergy.psegliny.com/Dashboard",
+            "https://mysmartenergy.nj.pseg.com/Dashboard",
             timeout=REQUEST_TIMEOUT,
         )
         # 4xx = likely auth issue; 5xx = transient server error
@@ -161,7 +161,7 @@ class PSEGLIClient:
 
     def _setup_chart_context(self, request_token: str, start_date: datetime, end_date: datetime) -> None:
         """Set up the Chart context with hourly granularity."""
-        chart_setup_url = "https://mysmartenergy.psegliny.com/Dashboard/Chart"
+        chart_setup_url = "https://mysmartenergy.nj.pseg.com/Dashboard/Chart"
         chart_setup_data = {
             "__RequestVerificationToken": request_token,
             "UsageInterval": "5",  # 5 = Hourly granularity
@@ -200,7 +200,7 @@ class PSEGLIClient:
 
     def _get_chart_data(self) -> dict[str, Any]:
         """Get the actual chart data from PSEG."""
-        chart_data_url = "https://mysmartenergy.psegliny.com/Dashboard/ChartData"
+        chart_data_url = "https://mysmartenergy.nj.pseg.com/Dashboard/ChartData"
         chart_data_params = {
             "_": int(datetime.now().timestamp() * 1000)  # Cache buster
         }

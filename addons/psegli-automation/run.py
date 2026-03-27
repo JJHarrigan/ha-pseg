@@ -2,7 +2,7 @@
 """PSEG Long Island Automation Addon — FastAPI Server.
 
 Provides HTTP endpoints for the Home Assistant integration to obtain
-authenticated cookies from mysmartenergy.psegliny.com.
+authenticated cookies from mysmartenergy.nj.pseg.com.
 """
 
 import asyncio

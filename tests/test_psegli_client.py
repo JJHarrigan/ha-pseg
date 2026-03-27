@@ -58,7 +58,7 @@ class TestPSEGLIClient:
         """Redirect to login URL should raise InvalidAuth."""
         response = MagicMock()
         response.status_code = 200
-        response.url = "https://mysmartenergy.psegliny.com/Login"
+        response.url = "https://mysmartenergy.nj.pseg.com/Login"
         response.raise_for_status = MagicMock()
         mock_requests_session.get.return_value = response
 
@@ -71,7 +71,7 @@ class TestPSEGLIClient:
         """Successful connection returns True."""
         response = MagicMock()
         response.status_code = 200
-        response.url = "https://mysmartenergy.psegliny.com/Dashboard"
+        response.url = "https://mysmartenergy.nj.pseg.com/Dashboard"
         response.raise_for_status = MagicMock()
         mock_requests_session.get.return_value = response
 
@@ -83,7 +83,7 @@ class TestPSEGLIClient:
         """Data-path probe should succeed when dashboard and chart setup succeed."""
         dashboard_response = MagicMock()
         dashboard_response.status_code = 200
-        dashboard_response.url = "https://mysmartenergy.psegliny.com/Dashboard"
+        dashboard_response.url = "https://mysmartenergy.nj.pseg.com/Dashboard"
         dashboard_response.text = (
             '<input name="__RequestVerificationToken" type="hidden" value="token123" />'
         )
@@ -105,7 +105,7 @@ class TestPSEGLIClient:
         """Probe must validate only dashboard -> chart setup and skip ChartData."""
         dashboard_response = MagicMock()
         dashboard_response.status_code = 200
-        dashboard_response.url = "https://mysmartenergy.psegliny.com/Dashboard"
+        dashboard_response.url = "https://mysmartenergy.nj.pseg.com/Dashboard"
         dashboard_response.text = (
             '<input name="__RequestVerificationToken" type="hidden" value="token123" />'
         )
@@ -128,7 +128,7 @@ class TestPSEGLIClient:
         """Chart setup redirect is an auth failure, not a transient error."""
         dashboard_response = MagicMock()
         dashboard_response.status_code = 200
-        dashboard_response.url = "https://mysmartenergy.psegliny.com/Dashboard"
+        dashboard_response.url = "https://mysmartenergy.nj.pseg.com/Dashboard"
         dashboard_response.text = (
             '<input name="__RequestVerificationToken" type="hidden" value="token123" />'
         )
@@ -152,7 +152,7 @@ class TestPSEGLIClient:
         """Chart setup HTTP/5xx path should map to transient PSEGLIError."""
         dashboard_response = MagicMock()
         dashboard_response.status_code = 200
-        dashboard_response.url = "https://mysmartenergy.psegliny.com/Dashboard"
+        dashboard_response.url = "https://mysmartenergy.nj.pseg.com/Dashboard"
         dashboard_response.text = (
             '<input name="__RequestVerificationToken" type="hidden" value="token123" />'
         )
@@ -175,7 +175,7 @@ class TestPSEGLIClient:
         """Chart setup transport failures should map to transient PSEGLIError."""
         dashboard_response = MagicMock()
         dashboard_response.status_code = 200
-        dashboard_response.url = "https://mysmartenergy.psegliny.com/Dashboard"
+        dashboard_response.url = "https://mysmartenergy.nj.pseg.com/Dashboard"
         dashboard_response.text = (
             '<input name="__RequestVerificationToken" type="hidden" value="token123" />'
         )
@@ -200,7 +200,7 @@ class TestPSEGLIClient:
 
         responses = [
             # _get_dashboard_page GET (also serves as auth gate)
-            MagicMock(status_code=200, url="https://mysmartenergy.psegliny.com/Dashboard",
+            MagicMock(status_code=200, url="https://mysmartenergy.nj.pseg.com/Dashboard",
                      text=dashboard_html, raise_for_status=MagicMock()),
             # _get_chart_data GET
             MagicMock(status_code=200, text=chart_data_json, raise_for_status=MagicMock()),
@@ -234,7 +234,7 @@ class TestPSEGLIClient:
         """Token extraction should not depend on exact input attribute order."""
         response = MagicMock()
         response.status_code = 200
-        response.url = "https://mysmartenergy.psegliny.com/Dashboard"
+        response.url = "https://mysmartenergy.nj.pseg.com/Dashboard"
         response.text = "<input value='token_reordered' id='x' type='hidden' name='__RequestVerificationToken' />"
         mock_requests_session.get.return_value = response
 
@@ -248,7 +248,7 @@ class TestPSEGLIClient:
         """If dashboard omits hidden input, fallback to token present in cookie header."""
         response = MagicMock()
         response.status_code = 200
-        response.url = "https://mysmartenergy.psegliny.com/Dashboard"
+        response.url = "https://mysmartenergy.nj.pseg.com/Dashboard"
         response.text = "<html><body><h1>Dashboard</h1></body></html>"
         mock_requests_session.get.return_value = response
 

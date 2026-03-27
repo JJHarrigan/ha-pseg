@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Quick test: direct login to mysmartenergy.psegliny.com with stealth Playwright."""
+"""Quick test: direct login to mysmartenergy.nj.pseg.com with stealth Playwright."""
 
 import asyncio
 import sys
@@ -41,9 +41,9 @@ async def test_direct_login(email: str, password: str):
 
     try:
         # Step 1: Go straight to mysmartenergy
-        print("Navigating to mysmartenergy.psegliny.com/Dashboard ...")
+        print("Navigating to mysmartenergy.nj.pseg.com/Dashboard ...")
         await page.goto(
-            "https://mysmartenergy.psegliny.com/Dashboard",
+            "https://mysmartenergy.nj.pseg.com/Dashboard",
             wait_until="domcontentloaded",
         )
         await asyncio.sleep(2)

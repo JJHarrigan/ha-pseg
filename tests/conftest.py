@@ -16,7 +16,7 @@ def mock_requests_session():
     # Default: Dashboard returns 200, no redirect to login
     response = MagicMock()
     response.status_code = 200
-    response.url = "https://mysmartenergy.psegliny.com/Dashboard"
+    response.url = "https://mysmartenergy.nj.pseg.com/Dashboard"
     response.text = '<input name="__RequestVerificationToken" type="hidden" value="test_token_123" />'
     response.raise_for_status = MagicMock()
     session.get.return_value = response

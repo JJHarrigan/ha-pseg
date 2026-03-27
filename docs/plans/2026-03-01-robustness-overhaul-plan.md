@@ -163,7 +163,7 @@ Codex identified one remaining lifecycle bug in unload cleanup:
 
 Before writing this plan, we tested the login flow against the real PSEG infrastructure and discovered:
 
-1. **mysmartenergy.psegliny.com has its own login form** — no need to route through myaccount/Okta. The form has fields `#LoginEmail`, `#LoginPassword`, `#RememberMe`, and a `.loginBtn` submit button.
+1. **mysmartenergy.nj.pseg.com has its own login form** — no need to route through myaccount/Okta. The form has fields `#LoginEmail`, `#LoginPassword`, `#RememberMe`, and a `.loginBtn` submit button.
 2. **No MFA required** on the mysmartenergy login — just email, password, and a Google invisible reCAPTCHA.
 3. **reCAPTCHA triggers a visible image challenge** on first visits, but **stops triggering after a few visits** when using `playwright-stealth` + a persistent browser profile (`.browser_profile/`).
 4. **The `playwright-stealth` library is already a dependency but was never used** — the code hand-rolls inferior stealth patches. The library's `Stealth` class + `apply_stealth_async()` patches Canvas, WebGL, AudioContext, fonts, and dozens of other fingerprinting vectors.
@@ -185,7 +185,7 @@ Before writing this plan, we tested the login flow against the real PSEG infrast
 
 Replace `simulate_realistic_browsing()` and its ~400 lines of multi-hop navigation with a direct flow:
 
-1. Navigate to `https://mysmartenergy.psegliny.com/Dashboard` (shows login form when unauthenticated)
+1. Navigate to `https://mysmartenergy.nj.pseg.com/Dashboard` (shows login form when unauthenticated)
 2. Fill `#LoginEmail`, `#LoginPassword`, check `#RememberMe`
 3. Click `.loginBtn` (triggers invisible reCAPTCHA)
 4. Listen for the `POST /Home/Login` AJAX response via `page.on("response", ...)`
@@ -258,7 +258,7 @@ Add new endpoint:
 
 ### Tests for Phase 1
 
-- `test_direct_mysmartenergy_navigation`: Mock Playwright page, verify `goto` called with `mysmartenergy.psegliny.com/Dashboard`
+- `test_direct_mysmartenergy_navigation`: Mock Playwright page, verify `goto` called with `mysmartenergy.nj.pseg.com/Dashboard`
 - `test_no_brave_search_url`: Assert no reference to `search.brave.com` in new code
 - `test_no_networkidle`: Grep for `networkidle` and assert zero matches
 - `test_stealth_library_used`: Verify `Stealth` and `apply_stealth_async` are called

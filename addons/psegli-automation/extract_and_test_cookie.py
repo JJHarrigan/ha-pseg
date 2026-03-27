@@ -39,7 +39,7 @@ def test_cookie(cookie_string: str):
     })
 
     print("Testing cookie against Dashboard ...")
-    resp = session.get("https://mysmartenergy.psegliny.com/Dashboard", timeout=30)
+    resp = session.get("https://mysmartenergy.nj.pseg.com/Dashboard", timeout=30)
     print(f"  Status: {resp.status_code} | URL: {resp.url}")
 
     if "LoginEmail" in resp.text or "login" in resp.url.lower():
@@ -52,7 +52,7 @@ def test_cookie(cookie_string: str):
     end = datetime.now()
     start = end - timedelta(days=1)
     session.post(
-        "https://mysmartenergy.psegliny.com/Dashboard/Chart",
+        "https://mysmartenergy.nj.pseg.com/Dashboard/Chart",
         data={
             "Message.ChartType": "0",
             "Message.UsageInterval": "5",
@@ -62,7 +62,7 @@ def test_cookie(cookie_string: str):
         timeout=30,
     )
     chart_resp = session.get(
-        "https://mysmartenergy.psegliny.com/Dashboard/ChartData",
+        "https://mysmartenergy.nj.pseg.com/Dashboard/ChartData",
         params={"type": "Usage"},
         timeout=30,
     )
